@@ -19,6 +19,11 @@
 - [H00-C native acceptance record](docs/acceptance/H00-C-card-registry-acceptance.md) — test sequence, exact fingerprints, evidence level and outstanding receipts.
 - [Project status](docs/STATUS.md) — gates and the next H01 design mission.
 
+## Coding-agent workflow
+
+- [Root AGENTS.md](AGENTS.md) — always-on repository instructions for Antigravity and other coding agents.
+- [Antigravity CLI workflow](docs/process/ANTIGRAVITY-WORKFLOW.md) — official-best-practices adaptation and H01-B0 plan-only kickoff.
+
 ## Workflow
 
 **ChatGPT:** research, architecture, task specification, documentation, independent review. **Antigravity:** bounded implementation and implementation tests only after an approved mission. **Project owner:** native testing and authorization of repository commits, pushes, merges and releases.
