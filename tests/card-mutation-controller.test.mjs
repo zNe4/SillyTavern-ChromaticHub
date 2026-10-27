@@ -1,5 +1,5 @@
 /**
- * SillyTavern-ChromaticHub: Guarded Mutation Controller Tests (H01-B2-I)
+ * SillyTavern-ChromaticHub: Guarded Mutation Controller Tests (H01-B2-I / H01-B2-R1)
  *
  * Synthetic unit tests covering:
  * - Parameter and mandatory context validation
@@ -12,6 +12,7 @@
  * - Two-phase cancellation and bounded timeouts
  * - Three-way decision table coverage
  * - Immutability, privacy, and memory safety
+ * - H01-B2-R1: Hard deadlines, malformed responses, diagnostic privacy
  */
 
 import test from 'node:test';
@@ -1239,5 +1240,421 @@ test('mutateCard - Immutability, Privacy & Memory Safety', async (t) => {
 
     const serialized = JSON.stringify(res);
     assert.equal(serialized.includes(secretToken), false, 'Must never leak authorization secrets');
+  });
+});
+
+test('mutateCard - H01-B2-R1 Regression Suite (Deadlines, Malformed Responses, Privacy)', async (t) => {
+  await t.test('POST fetch never settles and ignores abort', async () => {
+    const avatar = uniqueAvatar('R1_HangingFetch');
+    const owner = { kind: 'installed-card', avatar };
+    const mockFetch = createMockFetch({
+      '/api/characters/get': () => ({
+        ok: true,
+        status: 200,
+        json: async () => createMockCard(avatar, undefined),
+      }),
+      '/api/characters/merge-attributes': () => new Promise(() => {}),
+    });
+    const deps = createValidDependencies({
+      avatar,
+      fetch: mockFetch,
+      postTimeoutMs: 30,
+      verifyTimeoutMs: 50,
+    });
+    const res = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'Hanging' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+    assert.equal(res.ok, false);
+    assert.equal(res.code, 'WRITE_UNCERTAIN');
+    assert.equal(res.details?.postOutcome, 'UNKNOWN');
+
+    const res2 = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'Hanging2' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+    assert.equal(res2.ok, false);
+    assert.equal(res2.code, 'CARD_QUARANTINED');
+  });
+
+  await t.test('Verification read never settles and ignores abort', async () => {
+    const avatar = uniqueAvatar('R1_HangingVerify');
+    const owner = { kind: 'installed-card', avatar };
+    let readCount = 0;
+    const mockFetch = createMockFetch({
+      '/api/characters/get': () => {
+        readCount++;
+        if (readCount === 1) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => createMockCard(avatar, undefined),
+          };
+        }
+        return new Promise(() => {});
+      },
+      '/api/characters/merge-attributes': () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ ok: true }),
+      }),
+    });
+    const deps = createValidDependencies({
+      avatar,
+      fetch: mockFetch,
+      postTimeoutMs: 50,
+      verifyTimeoutMs: 30,
+    });
+    const res = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'HangingVerify' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+    assert.equal(res.ok, false);
+    assert.equal(res.code, 'WRITE_UNCERTAIN');
+
+    const res2 = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'Blocked' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+    assert.equal(res2.ok, false);
+    assert.equal(res2.code, 'CARD_QUARANTINED');
+  });
+
+  await t.test('A late HTTP 200 arrives after the POST deadline', async () => {
+    const avatar = uniqueAvatar('R1_Late200');
+    const owner = { kind: 'installed-card', avatar };
+    let lateSettled = false;
+    const mockFetch = createMockFetch({
+      '/api/characters/get': () => ({
+        ok: true,
+        status: 200,
+        json: async () => createMockCard(avatar, undefined),
+      }),
+      '/api/characters/merge-attributes': async () => {
+        await new Promise((r) => setTimeout(r, 80));
+        lateSettled = true;
+        return { ok: true, status: 200, json: async () => ({}) };
+      },
+    });
+    const deps = createValidDependencies({
+      avatar,
+      fetch: mockFetch,
+      postTimeoutMs: 25,
+      verifyTimeoutMs: 40,
+    });
+    const res = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'Late200' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+    assert.equal(res.ok, false);
+    assert.equal(res.code, 'WRITE_UNCERTAIN');
+
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(lateSettled, true);
+
+    const res2 = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'StillBlocked' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+    assert.equal(res2.ok, false);
+    assert.equal(res2.code, 'CARD_QUARANTINED');
+  });
+
+  await t.test('A late HTTP rejection arrives after the POST deadline', async () => {
+    const avatar = uniqueAvatar('R1_Late500');
+    const owner = { kind: 'installed-card', avatar };
+    let lateSettled = false;
+    const mockFetch = createMockFetch({
+      '/api/characters/get': () => ({
+        ok: true,
+        status: 200,
+        json: async () => createMockCard(avatar, undefined),
+      }),
+      '/api/characters/merge-attributes': async () => {
+        await new Promise((r) => setTimeout(r, 80));
+        lateSettled = true;
+        throw new Error('Late network error');
+      },
+    });
+    const deps = createValidDependencies({
+      avatar,
+      fetch: mockFetch,
+      postTimeoutMs: 25,
+      verifyTimeoutMs: 40,
+    });
+    const res = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'Late500' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+    assert.equal(res.ok, false);
+    assert.equal(res.code, 'WRITE_UNCERTAIN');
+
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(lateSettled, true);
+
+    const res2 = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'StillBlocked' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+    assert.equal(res2.ok, false);
+    assert.equal(res2.code, 'CARD_QUARANTINED');
+  });
+
+  await t.test('POST fetch resolves null', async () => {
+    const avatar = uniqueAvatar('R1_NullPost');
+    const owner = { kind: 'installed-card', avatar };
+    const mockFetch = createMockFetch({
+      '/api/characters/get': () => ({
+        ok: true,
+        status: 200,
+        json: async () => createMockCard(avatar, undefined),
+      }),
+      '/api/characters/merge-attributes': () => null,
+    });
+    const deps = createValidDependencies({ avatar, fetch: mockFetch });
+    const res = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'Null' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+    assert.equal(res.ok, false);
+    assert.equal(res.code, 'WRITE_UNCERTAIN');
+
+    const res2 = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'QuarantinedAfterNull' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+    assert.equal(res2.ok, false);
+    assert.equal(res2.code, 'CARD_QUARANTINED');
+  });
+
+  await t.test('POST fetch resolves undefined', async () => {
+    const avatar = uniqueAvatar('R1_UndefPost');
+    const owner = { kind: 'installed-card', avatar };
+    const mockFetch = createMockFetch({
+      '/api/characters/get': () => ({
+        ok: true,
+        status: 200,
+        json: async () => createMockCard(avatar, undefined),
+      }),
+      '/api/characters/merge-attributes': () => undefined,
+    });
+    const deps = createValidDependencies({ avatar, fetch: mockFetch });
+    const res = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'Undef' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+    assert.equal(res.ok, false);
+    assert.equal(res.code, 'WRITE_UNCERTAIN');
+
+    const res2 = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'QuarantinedAfterUndef' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+    assert.equal(res2.ok, false);
+    assert.equal(res2.code, 'CARD_QUARANTINED');
+  });
+
+  await t.test('POST fetch resolves a malformed response object', async () => {
+    const avatar = uniqueAvatar('R1_MalformedPost');
+    const owner = { kind: 'installed-card', avatar };
+    const mockFetch = createMockFetch({
+      '/api/characters/get': () => ({
+        ok: true,
+        status: 200,
+        json: async () => createMockCard(avatar, undefined),
+      }),
+      '/api/characters/merge-attributes': () => ({ status: 'not-a-number' }),
+    });
+    const deps = createValidDependencies({ avatar, fetch: mockFetch });
+    const res = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'Malformed' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+    assert.equal(res.ok, false);
+    assert.equal(res.code, 'WRITE_UNCERTAIN');
+
+    const res2 = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'QuarantinedAfterMalformed' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+    assert.equal(res2.ok, false);
+    assert.equal(res2.code, 'CARD_QUARANTINED');
+  });
+
+  await t.test('Editor safety returns { safe: false, secret: "PRIVATE_TOKEN" }', async () => {
+    const avatar = uniqueAvatar('R1_PrivacyEditorResult');
+    const owner = { kind: 'installed-card', avatar };
+    const secretToken = 'SECRET_TOKEN_IN_EDITOR_RESULT_123';
+    const deps = createValidDependencies({
+      avatar,
+      checkEditorSafety: () => ({ safe: false, secret: secretToken }),
+    });
+    const res = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'Sec' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+    assert.equal(res.ok, false);
+    assert.equal(res.code, 'WRITE_REJECTED');
+    assert.equal(res.details?.reason, 'EDITOR_UNSAFE');
+    assert.equal(res.details?.status, undefined);
+    const serialized = JSON.stringify(res);
+    assert.equal(serialized.includes(secretToken), false, 'Must not leak secret from editor result');
+  });
+
+  await t.test('Editor safety throws an exception containing a secret', async () => {
+    const avatar = uniqueAvatar('R1_PrivacyEditorThrow');
+    const owner = { kind: 'installed-card', avatar };
+    const secretError = 'SECRET_INTERNAL_DB_PASSWORD_456';
+    const deps = createValidDependencies({
+      avatar,
+      checkEditorSafety: () => {
+        throw new Error(`Failed with ${secretError}`);
+      },
+    });
+    const res = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'Sec2' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+    assert.equal(res.ok, false);
+    assert.equal(res.code, 'WRITE_REJECTED');
+    assert.equal(res.details?.reason, 'EDITOR_CHECK_THREW');
+    assert.equal(res.details?.error, undefined);
+    const serialized = JSON.stringify(res);
+    assert.equal(serialized.includes(secretError), false, 'Must not leak secret from thrown editor error');
+  });
+
+  await t.test('Header supplier throws before dispatch', async () => {
+    const avatar = uniqueAvatar('R1_HeaderThrow');
+    const owner = { kind: 'installed-card', avatar };
+    const secretKey = 'SECRET_HEADER_KEY_789';
+    let postAttempted = false;
+    const mockFetch = createMockFetch({
+      '/api/characters/get': () => ({
+        ok: true,
+        status: 200,
+        json: async () => createMockCard(avatar, undefined),
+      }),
+      '/api/characters/merge-attributes': () => {
+        postAttempted = true;
+        return { ok: true, status: 200, json: async () => ({}) };
+      },
+    });
+
+    let headerCallCount = 0;
+    const deps = createValidDependencies({
+      avatar,
+      fetch: mockFetch,
+      getRequestHeaders: () => {
+        headerCallCount++;
+        if (headerCallCount === 1) {
+          return { 'X-CSRF-Token': 'ok-token' };
+        }
+        throw new Error(`Auth failed with ${secretKey}`);
+      },
+    });
+    const res = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'HeaderFail' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+    assert.equal(res.ok, false);
+    assert.equal(res.code, 'WRITE_REJECTED');
+    assert.equal(res.details?.reason, 'HEADERS_FAILED');
+    assert.equal(postAttempted, false, 'Must not attempt POST when headers throw');
+    const serialized = JSON.stringify(res);
+    assert.equal(serialized.includes(secretKey), false);
+  });
+
+  await t.test('Invalid timeout options cause zero write requests', async () => {
+    const avatar = uniqueAvatar('R1_InvalidTimeouts');
+    const owner = { kind: 'installed-card', avatar };
+    let callsCount = 0;
+    const mockFetch = () => { callsCount++; return {}; };
+
+    const invalidCases = [
+      { postTimeoutMs: -10 },
+      { postTimeoutMs: 0 },
+      { postTimeoutMs: 'fast' },
+      { postTimeoutMs: NaN },
+      { verifyTimeoutMs: -5 },
+      { verifyTimeoutMs: 0 },
+      { verifyTimeoutMs: 3.14 },
+    ];
+
+    for (const badOption of invalidCases) {
+      const deps = createValidDependencies({
+        avatar,
+        fetch: mockFetch,
+        ...badOption,
+      });
+      const res = await mutateCard(
+        owner,
+        { type: 'add', character: { name: 'BadTimeout' } },
+        { status: 'UNINITIALIZED' },
+        deps
+      );
+      assert.equal(res.ok, false);
+      assert.equal(res.code, 'INVALID_OPTIONS');
+    }
+    assert.equal(callsCount, 0, 'Zero network calls must be made on invalid timeout options');
+  });
+
+  await t.test('No duplicate POST or automatic retry is performed', async () => {
+    const avatar = uniqueAvatar('R1_NoRetry');
+    const owner = { kind: 'installed-card', avatar };
+    let mergeCalls = 0;
+    const mockFetch = createMockFetch({
+      '/api/characters/get': () => ({
+        ok: true,
+        status: 200,
+        json: async () => createMockCard(avatar, undefined),
+      }),
+      '/api/characters/merge-attributes': () => {
+        mergeCalls++;
+        return { ok: false, status: 500, json: async () => ({}) };
+      },
+    });
+    const deps = createValidDependencies({ avatar, fetch: mockFetch });
+    const res = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'RetryCheck' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+    assert.equal(res.ok, false);
+    assert.equal(mergeCalls, 1, 'Exactly one POST must be attempted, zero retries');
   });
 });

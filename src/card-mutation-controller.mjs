@@ -1,10 +1,11 @@
 /**
- * SillyTavern-ChromaticHub: Guarded Single-Card Mutation Controller (H01-B2-I)
+ * SillyTavern-ChromaticHub: Guarded Single-Card Mutation Controller (H01-B2-R1)
  *
  * Implements guarded, single-card mutation of data.extensions.chromaticHub.
  * Reuses pure core identity contracts and read-only SillyTavern adapter.
  *
- * Conforms strictly to H01-B2-P-R1 specification and invariants.
+ * Enforces hard network deadlines, quarantine on uncertainty, diagnostic privacy,
+ * and comprehensive resource cleanup.
  */
 
 import { planMutation, serializeRegistry } from './identity-registry.mjs';
@@ -282,8 +283,12 @@ function validateDependencies(dependencies) {
     };
   }
 
-  const hasDirectAvatar = typeof dependencies.expectedContext.avatar === 'string' && dependencies.expectedContext.avatar.trim().length > 0;
-  const hasCharAvatar = Array.isArray(dependencies.expectedContext.characters) && typeof dependencies.expectedContext.characterId === 'number';
+  const hasDirectAvatar =
+    typeof dependencies.expectedContext.avatar === 'string' &&
+    dependencies.expectedContext.avatar.trim().length > 0;
+  const hasCharAvatar =
+    Array.isArray(dependencies.expectedContext.characters) &&
+    typeof dependencies.expectedContext.characterId === 'number';
   if (!hasDirectAvatar && !hasCharAvatar) {
     return {
       ok: false,
@@ -313,7 +318,9 @@ function validateDependencies(dependencies) {
 
   if (
     dependencies.signal !== undefined &&
-    (dependencies.signal === null || typeof dependencies.signal !== 'object' || typeof dependencies.signal.aborted !== 'boolean')
+    (dependencies.signal === null ||
+      typeof dependencies.signal !== 'object' ||
+      typeof dependencies.signal.aborted !== 'boolean')
   ) {
     return {
       ok: false,
@@ -321,6 +328,36 @@ function validateDependencies(dependencies) {
       message: 'dependencies.signal must be an AbortSignal instance',
       recoverable: false,
     };
+  }
+
+  if (dependencies.postTimeoutMs !== undefined) {
+    if (
+      typeof dependencies.postTimeoutMs !== 'number' ||
+      !Number.isSafeInteger(dependencies.postTimeoutMs) ||
+      dependencies.postTimeoutMs <= 0
+    ) {
+      return {
+        ok: false,
+        code: 'INVALID_OPTIONS',
+        message: 'postTimeoutMs must be a positive safe integer',
+        recoverable: false,
+      };
+    }
+  }
+
+  if (dependencies.verifyTimeoutMs !== undefined) {
+    if (
+      typeof dependencies.verifyTimeoutMs !== 'number' ||
+      !Number.isSafeInteger(dependencies.verifyTimeoutMs) ||
+      dependencies.verifyTimeoutMs <= 0
+    ) {
+      return {
+        ok: false,
+        code: 'INVALID_OPTIONS',
+        message: 'verifyTimeoutMs must be a positive safe integer',
+        recoverable: false,
+      };
+    }
   }
 
   return { ok: true };
@@ -413,7 +450,11 @@ function evaluateContext(owner, expectedContext, getContext) {
     };
   }
 
-  if (expectedContext.chatId !== undefined && expectedContext.chatId !== null && liveCtx.chatId !== expectedContext.chatId) {
+  if (
+    expectedContext.chatId !== undefined &&
+    expectedContext.chatId !== null &&
+    liveCtx.chatId !== expectedContext.chatId
+  ) {
     return {
       ok: false,
       code: 'STALE_CARD_LOCATOR',
@@ -429,13 +470,13 @@ function evaluateEditorSafety(owner, checkEditorSafety) {
   let result;
   try {
     result = checkEditorSafety(owner);
-  } catch (err) {
+  } catch (_err) {
     return {
       ok: false,
       code: 'WRITE_REJECTED',
       message: 'Editor safety check failed with an exception',
       recoverable: false,
-      details: { reason: 'EDITOR_CHECK_THREW', error: String(err?.message || err) },
+      details: { reason: 'EDITOR_CHECK_THREW' },
     };
   }
 
@@ -445,7 +486,7 @@ function evaluateEditorSafety(owner, checkEditorSafety) {
       code: 'WRITE_REJECTED',
       message: 'Editor safety cannot be established',
       recoverable: false,
-      details: { reason: 'EDITOR_UNSAFE', status: result },
+      details: { reason: 'EDITOR_UNSAFE' },
     };
   }
 
@@ -585,7 +626,7 @@ export async function mutateCard(owner, command, expectedSnapshot, dependencies)
   const releaseQueue = lockResult.release;
 
   try {
-    // 7. Post-Queue Authoritative Quarantine Check (Mandatory Correction A)
+    // 7. Post-Queue Authoritative Quarantine Check
     if (quarantinedAvatars.has(avatar)) {
       return {
         ok: false,
@@ -688,7 +729,6 @@ export async function mutateCard(owner, command, expectedSnapshot, dependencies)
       const planSer = serializeRegistry(planResult.value);
       const preSer = serializeRegistry(preRead.value);
       if (planSer.ok && preSer.ok && planSer.value === preSer.value) {
-        // Recheck context and editor safety before returning noop
         const noopCtx = evaluateContext(owner, dependencies.expectedContext, dependencies.getContext);
         if (!noopCtx.ok) return noopCtx;
 
@@ -721,27 +761,7 @@ export async function mutateCard(owner, command, expectedSnapshot, dependencies)
     const preDispatchEditor = evaluateEditorSafety(owner, dependencies.checkEditorSafety);
     if (!preDispatchEditor.ok) return preDispatchEditor;
 
-    // 16. Bounded POST Dispatch
-    const postTimeoutMs = dependencies.postTimeoutMs ?? DEFAULT_POST_TIMEOUT_MS;
-    const verifyTimeoutMs = dependencies.verifyTimeoutMs ?? DEFAULT_VERIFY_TIMEOUT_MS;
-
-    const postController = new AbortController();
-    let postTimedOut = false;
-    const postTimer = setTimeout(() => {
-      postTimedOut = true;
-      postController.abort();
-    }, postTimeoutMs);
-
-    let onUserPostAbort;
-    if (dependencies.signal) {
-      onUserPostAbort = () => postController.abort();
-      if (dependencies.signal.aborted) {
-        postController.abort();
-      } else {
-        dependencies.signal.addEventListener('abort', onUserPostAbort, { once: true });
-      }
-    }
-
+    // 16. Header Retrieval & Payload Preparation
     let rawHeaders;
     try {
       rawHeaders = dependencies.getRequestHeaders();
@@ -749,8 +769,19 @@ export async function mutateCard(owner, command, expectedSnapshot, dependencies)
       return {
         ok: false,
         code: 'WRITE_REJECTED',
-        message: 'getRequestHeaders threw before dispatch',
+        message: 'Failed to retrieve request headers',
         recoverable: false,
+        details: { reason: 'HEADERS_FAILED' },
+      };
+    }
+
+    if (!isPlainObject(rawHeaders)) {
+      return {
+        ok: false,
+        code: 'WRITE_REJECTED',
+        message: 'getRequestHeaders must return a plain object',
+        recoverable: false,
+        details: { reason: 'INVALID_HEADERS' },
       };
     }
 
@@ -768,48 +799,112 @@ export async function mutateCard(owner, command, expectedSnapshot, dependencies)
       },
     };
 
-    let postResponse;
+    // 17. Hard-Bounded POST Dispatch
+    const postTimeoutMs = dependencies.postTimeoutMs ?? DEFAULT_POST_TIMEOUT_MS;
+    const postController = new AbortController();
+
+    let postTimer = null;
+    let onUserPostAbort = null;
+    let postResponse = null;
     let postOutcome = 'COMPLETED';
+
     try {
-      postResponse = await fetchFn('/api/characters/merge-attributes', {
+      const postDeadlinePromise = new Promise((_, reject) => {
+        postTimer = setTimeout(() => {
+          postController.abort();
+          const err = new Error('POST deadline exceeded');
+          err.name = 'TimeoutError';
+          reject(err);
+        }, postTimeoutMs);
+      });
+
+      if (dependencies.signal) {
+        onUserPostAbort = () => postController.abort();
+        if (dependencies.signal.aborted) {
+          postController.abort();
+        } else {
+          dependencies.signal.addEventListener('abort', onUserPostAbort, { once: true });
+        }
+      }
+
+      const rawPostPromise = fetchFn('/api/characters/merge-attributes', {
         method: 'POST',
         headers,
         body: JSON.stringify(payload),
         signal: postController.signal,
       });
+
+      // Avoid unhandled rejection if fetch rejects after deadline
+      rawPostPromise.catch(() => {});
+
+      postResponse = await Promise.race([rawPostPromise, postDeadlinePromise]);
     } catch (_err) {
       postOutcome = 'UNKNOWN';
     } finally {
-      clearTimeout(postTimer);
+      if (postTimer !== null) {
+        clearTimeout(postTimer);
+        postTimer = null;
+      }
       if (dependencies.signal && onUserPostAbort) {
         dependencies.signal.removeEventListener('abort', onUserPostAbort);
+        onUserPostAbort = null;
       }
     }
 
-    // 17. Independent Verification Readback (Separate Signal, Bounded, Decoupled from UI Context)
-    const verifyController = new AbortController();
-    const verifyTimer = setTimeout(() => {
-      verifyController.abort();
-    }, verifyTimeoutMs);
+    // Validate POST Response structure when completed
+    if (postOutcome === 'COMPLETED') {
+      const isValidResponse =
+        postResponse &&
+        typeof postResponse === 'object' &&
+        typeof postResponse.status === 'number';
 
-    let readback;
+      if (!isValidResponse) {
+        postOutcome = 'UNKNOWN';
+      }
+    }
+
+    // 18. Hard-Bounded Independent Verification Readback
+    const verifyTimeoutMs = dependencies.verifyTimeoutMs ?? DEFAULT_VERIFY_TIMEOUT_MS;
+    const verifyController = new AbortController();
+
+    let verifyTimer = null;
+    let readback = null;
     let readbackFailed = false;
+
     try {
-      readback = await readCardFn(owner, {
+      const verifyDeadlinePromise = new Promise((_, reject) => {
+        verifyTimer = setTimeout(() => {
+          verifyController.abort();
+          const err = new Error('Verification deadline exceeded');
+          err.name = 'TimeoutError';
+          reject(err);
+        }, verifyTimeoutMs);
+      });
+
+      const rawReadPromise = readCardFn(owner, {
         getRequestHeaders: dependencies.getRequestHeaders,
         fetch: fetchFn,
         signal: verifyController.signal,
       });
+
+      // Avoid unhandled rejection if readCard rejects after deadline
+      rawReadPromise.catch(() => {});
+
+      readback = await Promise.race([rawReadPromise, verifyDeadlinePromise]);
       if (!readback || !readback.ok) {
         readbackFailed = true;
       }
     } catch (_err) {
       readbackFailed = true;
     } finally {
-      clearTimeout(verifyTimer);
+      if (verifyTimer !== null) {
+        clearTimeout(verifyTimer);
+        verifyTimer = null;
+      }
     }
 
-    const readbackMatchesNext = !readbackFailed &&
+    const readbackMatchesNext =
+      !readbackFailed &&
       readback.status === 'VALID' &&
       readback.value?.revision === planResult.value.revision &&
       serializeRegistry(readback.value).value === serializeRegistry(planResult.value).value;
@@ -819,15 +914,16 @@ export async function mutateCard(owner, command, expectedSnapshot, dependencies)
       if (preRead.status === 'UNINITIALIZED') {
         readbackMatchesOld = readback.status === 'UNINITIALIZED';
       } else {
-        readbackMatchesOld = readback.status === 'VALID' &&
+        readbackMatchesOld =
+          readback.status === 'VALID' &&
           readback.value?.revision === preRead.value.revision &&
           serializeRegistry(readback.value).value === serializeRegistry(preRead.value).value;
       }
     }
 
-    // 18. Decision Table Evaluation
+    // 19. Decision Table Evaluation
 
-    // Category C: POST Completion Unknown (Timeout, Abort, Network Loss)
+    // Category C: POST Completion Unknown (Timeout, Abort, Network Loss, Malformed Response)
     if (postOutcome === 'UNKNOWN') {
       quarantinedAvatars.add(avatar);
       if (readbackMatchesNext) {
@@ -843,7 +939,8 @@ export async function mutateCard(owner, command, expectedSnapshot, dependencies)
         return {
           ok: false,
           code: 'WRITE_UNCERTAIN',
-          message: 'POST completion was unknown; disk currently holds old registry but server may persist asynchronously',
+          message:
+            'POST completion was unknown; disk currently holds old registry but server may persist asynchronously',
           recoverable: false,
           details: { persistedObserved: false, postOutcome: 'UNKNOWN' },
         };
@@ -858,9 +955,8 @@ export async function mutateCard(owner, command, expectedSnapshot, dependencies)
     }
 
     // Category B: POST completed with an HTTP response
-    if (postResponse && postResponse.status === 200) {
+    if (postResponse.status === 200) {
       if (readbackMatchesNext) {
-        // Verified Success - check context drift
         const postVerifyCtx = evaluateContext(owner, dependencies.expectedContext, dependencies.getContext);
         if (!postVerifyCtx.ok) {
           return {
@@ -911,7 +1007,7 @@ export async function mutateCard(owner, command, expectedSnapshot, dependencies)
     }
 
     // Completed with HTTP rejection (4xx / 5xx)
-    const httpStatus = postResponse?.status ?? 500;
+    const httpStatus = postResponse.status;
     if (readbackMatchesOld) {
       return {
         ok: false,
