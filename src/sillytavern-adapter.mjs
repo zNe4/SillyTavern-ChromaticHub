@@ -239,7 +239,17 @@ export async function readCard(owner, dependencies) {
 
   // 5. Pre-dispatch context check
   if (isContextBound) {
-    const preContext = dependencies.getContext();
+    let preContext;
+    try {
+      preContext = dependencies.getContext();
+    } catch (_err) {
+      return {
+        ok: false,
+        code: 'STALE_CARD_LOCATOR',
+        message: 'Context evaluation failed before dispatch',
+        recoverable: false,
+      };
+    }
     if (!isContextMatching(preContext, dependencies.expectedContext)) {
       return {
         ok: false,
@@ -281,7 +291,22 @@ export async function readCard(owner, dependencies) {
     };
   }
 
-  // 7. HTTP status evaluation
+  // 7. Fetch response object validation
+  if (
+    !response ||
+    typeof response !== 'object' ||
+    typeof response.status !== 'number' ||
+    typeof response.json !== 'function'
+  ) {
+    return {
+      ok: false,
+      code: 'READ_FAILED',
+      message: 'Invalid response object received from fetch',
+      recoverable: false,
+    };
+  }
+
+  // 8. HTTP status evaluation
   if (response.status === 404) {
     return {
       ok: false,
@@ -302,7 +327,7 @@ export async function readCard(owner, dependencies) {
     };
   }
 
-  // 8. Body parsing
+  // 9. Body parsing
   let body;
   try {
     body = await response.json();
@@ -323,7 +348,7 @@ export async function readCard(owner, dependencies) {
     };
   }
 
-  // 9. Full-card response envelope validation
+  // 10. Full-card response envelope validation
   if (!isPlainObject(body)) {
     return {
       ok: false,
@@ -370,9 +395,19 @@ export async function readCard(owner, dependencies) {
     };
   }
 
-  // 10. Post-dispatch context check
+  // 11. Post-dispatch context check
   if (isContextBound) {
-    const postContext = dependencies.getContext();
+    let postContext;
+    try {
+      postContext = dependencies.getContext();
+    } catch (_err) {
+      return {
+        ok: false,
+        code: 'STALE_CARD_LOCATOR',
+        message: 'Context evaluation failed during card read',
+        recoverable: false,
+      };
+    }
     if (!isContextMatching(postContext, dependencies.expectedContext)) {
       return {
         ok: false,
@@ -383,7 +418,7 @@ export async function readCard(owner, dependencies) {
     }
   }
 
-  // 11. Post-work cancellation check
+  // 12. Post-work cancellation check
   if (dependencies.signal?.aborted) {
     return {
       ok: false,
@@ -393,7 +428,7 @@ export async function readCard(owner, dependencies) {
     };
   }
 
-  // 12. Delegate to pure identity core parseRegistry
+  // 13. Delegate to pure identity core parseRegistry
   const rawRegistry = body.data.extensions?.chromaticHub;
   const parseResult = parseRegistry(rawRegistry);
 

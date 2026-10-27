@@ -473,6 +473,40 @@ test('readCard - HTTP & Transport Error Handling', async (t) => {
     assert.strictEqual(res.code, 'READ_FAILED');
     assert.strictEqual(res.recoverable, true);
   });
+
+  await t.test('handles fetch resolving to null as non-recoverable READ_FAILED without rejecting', async () => {
+    const nullFetch = async () => null;
+    const res = await readCard(validOwner, { getRequestHeaders, fetch: nullFetch });
+
+    assert.strictEqual(res.ok, false);
+    assert.strictEqual(res.code, 'READ_FAILED');
+    assert.strictEqual(res.recoverable, false);
+  });
+
+  await t.test('handles fetch resolving to undefined as non-recoverable READ_FAILED without rejecting', async () => {
+    const undefinedFetch = async () => undefined;
+    const res = await readCard(validOwner, { getRequestHeaders, fetch: undefinedFetch });
+
+    assert.strictEqual(res.ok, false);
+    assert.strictEqual(res.code, 'READ_FAILED');
+    assert.strictEqual(res.recoverable, false);
+  });
+
+  await t.test('handles malformed Response-like objects without usable JSON handling as READ_FAILED', async () => {
+    const badResponses = [
+      { status: 200, ok: true }, // missing json function
+      { status: 200, ok: true, json: 'not-a-function' },
+      { status: '200', json: async () => ({}) }, // non-number status
+    ];
+    for (const badResp of badResponses) {
+      const mockFetch = async () => badResp;
+      const res = await readCard(validOwner, { getRequestHeaders, fetch: mockFetch });
+
+      assert.strictEqual(res.ok, false);
+      assert.strictEqual(res.code, 'READ_FAILED');
+      assert.strictEqual(res.recoverable, false);
+    }
+  });
 });
 
 test('readCard - Registry Content & Version Validation (Core Delegation)', async (t) => {
@@ -590,6 +624,60 @@ test('readCard - Context-Bound Reads & Group Chats', async (t) => {
     assert.strictEqual(res.ok, false);
     assert.strictEqual(res.code, 'STALE_CARD_LOCATOR');
     assert.strictEqual(mockFetch.calls.length, 0); // No fetch dispatched
+  });
+
+  await t.test('handles getContext throwing before dispatch without dispatching network call', async () => {
+    const expectedContext = {
+      characterId: 0,
+      avatar: 'Hero.png',
+      groupId: null,
+      chatId: 'chat-1',
+    };
+    const mockFetch = createMockFetch(createFullCardResponse('Hero.png', createValidRegistry()));
+
+    const res = await readCard({ kind: 'installed-card', avatar: 'Hero.png' }, {
+      getRequestHeaders,
+      fetch: mockFetch,
+      expectedContext,
+      getContext: () => {
+        throw new Error('DOM UI context exploded with private data');
+      },
+    });
+
+    assert.strictEqual(res.ok, false);
+    assert.strictEqual(res.code, 'STALE_CARD_LOCATOR');
+    assert.strictEqual(mockFetch.calls.length, 0); // No fetch dispatched
+    // Privacy: raw error not leaked
+    assert.strictEqual(JSON.stringify(res).includes('private data'), false);
+  });
+
+  await t.test('handles getContext throwing during post-response verification', async () => {
+    const expectedContext = {
+      characterId: 0,
+      avatar: 'Hero.png',
+      groupId: null,
+      chatId: 'chat-1',
+    };
+    let callCount = 0;
+    const mockFetch = createMockFetch(createFullCardResponse('Hero.png', createValidRegistry()));
+
+    const res = await readCard({ kind: 'installed-card', avatar: 'Hero.png' }, {
+      getRequestHeaders,
+      fetch: mockFetch,
+      expectedContext,
+      getContext: () => {
+        callCount++;
+        if (callCount === 1) {
+          return expectedContext; // passes pre-dispatch
+        }
+        throw new Error('DOM UI context exploded post-fetch');
+      },
+    });
+
+    assert.strictEqual(res.ok, false);
+    assert.strictEqual(res.code, 'STALE_CARD_LOCATOR');
+    assert.strictEqual(mockFetch.calls.length, 1); // Fetch was dispatched
+    assert.strictEqual(JSON.stringify(res).includes('exploded'), false);
   });
 
   await t.test('detects in-flight context change after network fetch completes', async () => {
