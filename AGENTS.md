@@ -28,7 +28,11 @@ These rules apply across this repository. **The Hub must remain small:** a reusa
 
 ## Stop and handoff
 
-After implementation and verification, **STOP before staging, committing, pushing, PR creation, merging or release** unless the particular mission and owner explicitly authorize those actions. Give ChatGPT a review report with exact Git identity, complete changed paths, relevant diff/test evidence, known limitations and open questions. Do not auto-advance to the next mission.
+After implementation and verification, **STOP before staging, committing, pushing, PR creation, merging or release** unless the particular mission and owner explicitly authorize those actions.
+
+**Optional branch-push review handoff:** An implementation mission may explicitly authorize Antigravity to **stage only allowed files, commit and push its verified result to a dedicated task branch** as the review artifact, instead of asking the owner to upload diff files. This permission is **per mission**, not blanket permission. Verify tests and exact changed paths before the commit; report the pushed full SHA, remote branch, commit link, comparison URL and test evidence. Never push to `main`, merge, tag, force-push, or open a PR without separate explicit authorization. Do not overwrite existing remote work; if a push is rejected, stop and report it. A branch push means **available for independent review, not accepted**.
+
+For missions **without** explicit branch-push authorization, stop with a local diff/patch report. Either way, ChatGPT performs independent review, the owner authorizes integration and release, and no agent auto-advances to another mission.
 
 ## Architecture invariants
 
