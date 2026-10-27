@@ -524,10 +524,10 @@ export function planMutation(registry, command) {
 
     if (isNameSame && isDescSame && isAliasesSame) {
       // Mutation with no actual requested changes must not silently increment revision
-      // Return deeply immutable snapshot without mutating caller-owned registry
+      // Always return a deeply immutable snapshot without modifying caller-owned data
       return {
         ok: true,
-        value: Object.isFrozen(registry) ? registry : cloneAndSnapshot(registry),
+        value: cloneAndSnapshot(registry),
       };
     }
 

@@ -515,7 +515,7 @@ describe('planMutation', () => {
       const resSame = planMutation(initial, cmdSame);
       assert.equal(resSame.ok, true);
       assert.equal(resSame.value.revision, 5); // NOT incremented!
-      assert.equal(resSame.value, initial);
+      assert.deepEqual(resSame.value, initial);
 
       // Update with no fields
       const cmdEmpty = {
@@ -525,7 +525,7 @@ describe('planMutation', () => {
       const resEmpty = planMutation(initial, cmdEmpty);
       assert.equal(resEmpty.ok, true);
       assert.equal(resEmpty.value.revision, 5); // NOT incremented!
-      assert.equal(resEmpty.value, initial);
+      assert.deepEqual(resEmpty.value, initial);
     });
 
     it('returns IDENTITY_NOT_FOUND when updating non-existent character', () => {
@@ -996,5 +996,70 @@ describe('H01-B0-R1 regression tests', () => {
         assert.equal(res.code, 'INVALID_COMMAND');
       }
     });
+  });
+});
+
+describe('H01-B0-R2 regression tests', () => {
+  it('returns deeply immutable snapshot on no-op update with shallowly-frozen root registry', () => {
+    // Valid registry whose root has been frozen with Object.freeze(),
+    // but whose nested character array, character records and aliases remain mutable.
+    const rawAliases = ['Hero'];
+    const rawChar = createValidCharacter(VALID_UUID_1, 'Hina', 'Knight', rawAliases);
+    const rawCharacters = [rawChar];
+    const shallowFrozenRegistry = Object.freeze({
+      schemaVersion: 1,
+      revision: 7,
+      characters: rawCharacters,
+    });
+
+    assert.equal(Object.isFrozen(shallowFrozenRegistry), true);
+    assert.equal(Object.isFrozen(shallowFrozenRegistry.characters), false);
+    assert.equal(Object.isFrozen(rawChar), false);
+    assert.equal(Object.isFrozen(rawAliases), false);
+
+    const res = planMutation(shallowFrozenRegistry, {
+      type: 'update',
+      character: {
+        id: VALID_UUID_1,
+        name: 'Hina',
+        descriptor: 'Knight',
+        aliases: ['Hero'],
+      },
+    });
+
+    assert.equal(res.ok, true);
+
+    // 1. The returned snapshot is deeply frozen
+    assert.equal(Object.isFrozen(res.value), true);
+    assert.equal(Object.isFrozen(res.value.characters), true);
+    assert.equal(Object.isFrozen(res.value.characters[0]), true);
+    assert.equal(Object.isFrozen(res.value.characters[0].aliases), true);
+
+    // 2. The returned snapshot is distinct from the caller's registry
+    assert.notEqual(res.value, shallowFrozenRegistry);
+    assert.notEqual(res.value.characters, shallowFrozenRegistry.characters);
+    assert.notEqual(res.value.characters[0], rawChar);
+    assert.notEqual(res.value.characters[0].aliases, rawAliases);
+
+    // 3. The returned revision is unchanged
+    assert.equal(res.value.revision, 7);
+
+    // 4. The caller's nested objects remain unfrozen and unmodified
+    assert.equal(Object.isFrozen(shallowFrozenRegistry.characters), false);
+    assert.equal(Object.isFrozen(rawChar), false);
+    assert.equal(Object.isFrozen(rawAliases), false);
+    assert.equal(rawChar.name, 'Hina');
+    assert.deepEqual(rawAliases, ['Hero']);
+
+    // 5. Mutating the returned snapshot fails
+    assert.throws(() => {
+      res.value.revision = 99;
+    }, TypeError);
+    assert.throws(() => {
+      res.value.characters[0].name = 'Mutated';
+    }, TypeError);
+    assert.throws(() => {
+      res.value.characters[0].aliases.push('New');
+    }, TypeError);
   });
 });
