@@ -2,33 +2,29 @@
 
 **As of 2026-10-26/27.** Research-stage repository. **No production extension implementation.**
 
-## Completed / accepted evidence
+## H00 evidence accepted
 
-- **H00-A — ecosystem and options investigation:** complete; the initial global-registry preference was later **superseded** by owner choice of card-first storage.
-- **H00-B — per-card source feasibility:** complete. SillyTavern stores namespaced JSON in card metadata.
-- **H00-C — owner-native card-storage behavior:** **P0–P3-D reported PASS**, plus **P4 post-restart browser PASS**. Two same-name identities, chat switching, restart, rename, duplication, independent edits, JSON/PNG export-import, add-update-delete all demonstrated in a disposable local instance.
-- **ADR-001:** card-scoped registry **accepted for H01 design**, not a finalized API.
+- **H00-A:** identity-model research completed; global registry option superseded by card-first choice.
+- **H00-B:** pinned SillyTavern source confirmed native namespaced card metadata.
+- **H00-C:** owner reported **P0–P3-D PASS** and **P4 post-restart browser PASS**; multiple same-name identities, cross-chat persistence, server restart, rename, duplication with independent edits, PNG and JSON export/import, and add/update/delete.
+- **ADR-001:** per-card storage accepted as the H01 architecture basis, not as finished extension software.
 
-## Evidence not yet supplied
+## H01-A — design draft / awaiting owner and independent review
 
-- **P4 offline PNG/storage verification and original-source-status receipt** from the final stop/restart script (do not conflate with successful P4 browser output).
-- Separate P2-C offline script output (post-restart browser readback did pass).
+- [Identity contract v0.1](design/H01-A-identity-contract-v0.1.md) — schema, scoped references, read/write semantics, error taxonomy, chat-local proposal, explicit limits.
+- [Test and bounded-mission plan](design/H01-A-acceptance-and-missions.md) — adversarial cases, owner signoff checklist and H01-B0/B1/B2/B3/C/D breakdown.
+- **H01-A is not frozen/approved solely by publication of its draft.** Critical uncertainties include dirty editor synchronization, lack of server-side CAS, rename missed-events and chat metadata durability.
+- **NEXT:** independent review and owner decision on H01-A D1–D8; only then authorize H01-B0 pure contract tests.
 
-These do not negate the supported storage-feasibility result; they remain open evidence-accounting items.
+## Remaining H00 evidence receipts
 
-## H01-A — next research/design mission (ChatGPT-owned)
+- **P4 offline PNG/storage verification and original-source-status receipt not supplied**; the successful browser P4 post-restart result is distinct.
+- Separate P2-C offline parser output likewise not supplied; restart API readback passed.
 
-1. Draft and independently review a versioned card registry schema with immutable card-local IDs.
-2. Define **owner-card addressing** and lifecycle behavior (rename, duplicate, import, deletion, group chats, chat switching).
-3. Specify full-card hydration and readback-based writes, error statuses, validation, unsupported-schema behavior, and cross-tab/editor race limitations.
-4. Define temporary chat-only characters and **explicit user promotion** to a card; plan backward-compatible ChromaticDialogue bindings without replacing cN.
-5. Define security/privacy boundaries for exported aliases and non-portable image assets.
-6. Set minimal acceptance tests and break H01 implementation into bounded missions. **No Antigravity research delegation.**
+## Roles and boundaries
 
-**Deferred:** cross-card identity linking, ChromaticMessages continuation mechanics, ChromaticImages protocol migrations, Android acceptance, multi-tab transaction claims, automatic AI decisions.
+**ChatGPT** research, architecture, reviews and documentation. **Antigravity** bounded coding/testing only after approved assignment. **Owner** native testing and commit/merge/release authorization.
 
-## Ownership and publication
+Do not create global person IDs, silently merge duplicate names/cards, move cN IDs into card metadata, persist autonomous NPCs, or generate images on registry reads.
 
-ChatGPT: research / architecture / reviews / documentation. Antigravity: coding only under approved bounded missions. Owner: controls native testing and authorizes publication. Documentation commits do not authorize future code commits or releases.
-
-See [ADR-001](decisions/ADR-001-card-scoped-identity.md), [research](research/H00-source-investigation.md), and [acceptance evidence](acceptance/H00-C-card-registry-acceptance.md).
+References: [ADR-001](decisions/ADR-001-card-scoped-identity.md) · [H00 source](research/H00-source-investigation.md) · [H00 acceptance](acceptance/H00-C-card-registry-acceptance.md).
