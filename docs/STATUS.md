@@ -2,6 +2,12 @@
 
 **As of 2026-10-26/27.** Research-stage repository. **No production extension implementation.**
 
+## Agent workflow adoption (pending review)
+
+- Prepared root `AGENTS.md` and [Antigravity CLI workflow](process/ANTIGRAVITY-WORKFLOW.md) in a separate documentation-only review branch.
+- Adopt: explicit exploration/plan approval, tests-first implementation loop, exact-file scope and independent review before publication.
+- No H01-B0 coding or tests have begun; this workflow setup does **not** authorize Antigravity to implement anything.
+
 ## H00 evidence accepted
 
 - **H00-A:** identity-model research completed; global registry option superseded by card-first choice.
