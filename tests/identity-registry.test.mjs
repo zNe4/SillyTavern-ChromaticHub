@@ -746,3 +746,255 @@ describe('core contract invariants', () => {
     assert.equal(res.code, 'INVALID_COMMAND');
   });
 });
+
+describe('H01-B0-R1 regression tests', () => {
+  describe('A. Preserve caller-owned objects starting from mutable raw registries', () => {
+    it('leaves caller-owned objects and arrays unfrozen during add', () => {
+      const rawChar = createValidCharacter(VALID_UUID_1, 'Hina', 'Knight', ['Hero']);
+      const raw = createValidRegistry([rawChar]);
+
+      assert.equal(Object.isFrozen(raw), false);
+      assert.equal(Object.isFrozen(raw.characters), false);
+      assert.equal(Object.isFrozen(rawChar), false);
+      assert.equal(Object.isFrozen(rawChar.aliases), false);
+
+      const res = planMutation(raw, {
+        type: 'add',
+        character: { name: 'Second' },
+      });
+
+      assert.equal(res.ok, true);
+      assert.equal(Object.isFrozen(res.value), true);
+      assert.equal(Object.isFrozen(res.value.characters[0]), true);
+
+      // Caller objects must still be unfrozen
+      assert.equal(Object.isFrozen(raw), false);
+      assert.equal(Object.isFrozen(raw.characters), false);
+      assert.equal(Object.isFrozen(rawChar), false);
+      assert.equal(Object.isFrozen(rawChar.aliases), false);
+      assert.notEqual(res.value.characters[0], rawChar);
+    });
+
+    it('leaves caller-owned objects and arrays unfrozen during update', () => {
+      const rawChar1 = createValidCharacter(VALID_UUID_1, 'Char 1', 'Desc 1', ['A1']);
+      const rawChar2 = createValidCharacter(VALID_UUID_2, 'Char 2', 'Desc 2', ['A2']);
+      const raw = createValidRegistry([rawChar1, rawChar2]);
+
+      const res = planMutation(raw, {
+        type: 'update',
+        character: { id: VALID_UUID_1, name: 'Renamed' },
+      });
+
+      assert.equal(res.ok, true);
+      assert.equal(Object.isFrozen(res.value), true);
+
+      // Caller objects must still be unfrozen
+      assert.equal(Object.isFrozen(raw), false);
+      assert.equal(Object.isFrozen(raw.characters), false);
+      assert.equal(Object.isFrozen(rawChar1), false);
+      assert.equal(Object.isFrozen(rawChar2), false);
+      assert.equal(Object.isFrozen(rawChar2.aliases), false);
+    });
+
+    it('leaves caller-owned objects and arrays unfrozen during remove', () => {
+      const rawChar1 = createValidCharacter(VALID_UUID_1, 'Char 1');
+      const rawChar2 = createValidCharacter(VALID_UUID_2, 'Char 2', '', ['Stay']);
+      const raw = createValidRegistry([rawChar1, rawChar2]);
+
+      const res = planMutation(raw, {
+        type: 'remove',
+        identityId: VALID_UUID_1,
+      });
+
+      assert.equal(res.ok, true);
+      assert.equal(Object.isFrozen(res.value), true);
+
+      // Caller surviving objects must still be unfrozen
+      assert.equal(Object.isFrozen(raw), false);
+      assert.equal(Object.isFrozen(raw.characters), false);
+      assert.equal(Object.isFrozen(rawChar2), false);
+      assert.equal(Object.isFrozen(rawChar2.aliases), false);
+    });
+
+    it('returns deeply frozen snapshot without freezing caller objects on no-op update', () => {
+      const rawChar = createValidCharacter(VALID_UUID_1, 'Hina', 'Knight', ['Hero']);
+      const raw = createValidRegistry([rawChar], 3);
+
+      const res = planMutation(raw, {
+        type: 'update',
+        character: {
+          id: VALID_UUID_1,
+          name: 'Hina',
+          descriptor: 'Knight',
+          aliases: ['Hero'],
+        },
+      });
+
+      assert.equal(res.ok, true);
+      assert.equal(res.value.revision, 3); // Unchanged revision
+      assert.equal(Object.isFrozen(res.value), true);
+      assert.equal(Object.isFrozen(res.value.characters[0]), true);
+
+      // Caller objects remain unfrozen
+      assert.equal(Object.isFrozen(raw), false);
+      assert.equal(Object.isFrozen(raw.characters), false);
+      assert.equal(Object.isFrozen(rawChar), false);
+      assert.equal(Object.isFrozen(rawChar.aliases), false);
+    });
+  });
+
+  describe('B. Handle invalid lookups safely in resolveIdentity', () => {
+    it('returns explicit failure and does not throw on array containing null', () => {
+      const badRegistry = {
+        schemaVersion: 1,
+        revision: 1,
+        characters: [null],
+      };
+      const res = resolveIdentity(badRegistry, VALID_UUID_1);
+      assert.equal(res.ok, false);
+      assert.equal(res.code, 'INVALID_SCHEMA');
+    });
+
+    it('returns explicit failure on null or non-object registry', () => {
+      assert.equal(resolveIdentity(null, VALID_UUID_1).ok, false);
+      assert.equal(resolveIdentity('not-an-object', VALID_UUID_1).ok, false);
+      assert.equal(resolveIdentity(123, VALID_UUID_1).ok, false);
+    });
+
+    it('returns explicit failure on unsupported schemaVersion', () => {
+      const badRegistry = {
+        schemaVersion: 99,
+        revision: 1,
+        characters: [],
+      };
+      const res = resolveIdentity(badRegistry, VALID_UUID_1);
+      assert.equal(res.ok, false);
+      assert.equal(res.code, 'UNSUPPORTED_VERSION');
+    });
+
+    it('returns frozen clone and does not expose or freeze caller-owned character', () => {
+      const rawChar = createValidCharacter(VALID_UUID_1, 'Hina', 'Knight', ['Hero']);
+      const raw = createValidRegistry([rawChar]);
+
+      const res = resolveIdentity(raw, VALID_UUID_1);
+      assert.equal(res.ok, true);
+      assert.equal(Object.isFrozen(res.value), true);
+      assert.equal(Object.isFrozen(res.value.aliases), true);
+
+      // Caller's object is NOT the returned object and remains unfrozen
+      assert.notEqual(res.value, rawChar);
+      assert.equal(Object.isFrozen(rawChar), false);
+      assert.equal(Object.isFrozen(rawChar.aliases), false);
+    });
+  });
+
+  describe('C. Fail safely during ID generation', () => {
+    it('returns explicit failure without throwing when cryptographic RNG is unavailable', () => {
+      const original = globalThis.crypto.getRandomValues;
+      try {
+        Object.defineProperty(globalThis.crypto, 'getRandomValues', {
+          value: undefined,
+          configurable: true,
+          writable: true,
+        });
+        const reg = createValidRegistry();
+        const res = planMutation(reg, {
+          type: 'add',
+          character: { name: 'NoCrypto' },
+        });
+        assert.equal(res.ok, false);
+        assert.equal(res.code, 'RNG_UNAVAILABLE');
+      } finally {
+        Object.defineProperty(globalThis.crypto, 'getRandomValues', {
+          value: original,
+          configurable: true,
+          writable: true,
+        });
+      }
+    });
+
+    it('validates requested character attributes before invoking RNG', () => {
+      const original = globalThis.crypto.getRandomValues;
+      try {
+        Object.defineProperty(globalThis.crypto, 'getRandomValues', {
+          value: undefined,
+          configurable: true,
+          writable: true,
+        });
+        const reg = createValidRegistry();
+        // Invalid name (empty)
+        const res = planMutation(reg, {
+          type: 'add',
+          character: { name: '' },
+        });
+        assert.equal(res.ok, false);
+        assert.equal(res.code, 'INVALID_SCHEMA');
+      } finally {
+        Object.defineProperty(globalThis.crypto, 'getRandomValues', {
+          value: original,
+          configurable: true,
+          writable: true,
+        });
+      }
+    });
+
+    it('retries on UUID collision and never returns a duplicate ID', () => {
+      const originalGetRandomValues = globalThis.crypto.getRandomValues;
+      let callCount = 0;
+      try {
+        // Return VALID_UUID_1 bytes on 1st call, and VALID_UUID_2 bytes on 2nd call
+        globalThis.crypto.getRandomValues = (bytes) => {
+          callCount++;
+          if (callCount === 1) {
+            // Set bytes corresponding to VALID_UUID_1 ('4d15ae22-565c-4d19-9e6c-6d7653940cfa')
+            const hex = '4d15ae22565c4d199e6c6d7653940cfa';
+            for (let i = 0; i < 16; i++) {
+              bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+            }
+          } else {
+            // Set bytes corresponding to VALID_UUID_2 ('64be5fd4-6900-4ed7-9844-2692c684c984')
+            const hex = '64be5fd469004ed798442692c684c984';
+            for (let i = 0; i < 16; i++) {
+              bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+            }
+          }
+          return bytes;
+        };
+
+        const existing = createValidCharacter(VALID_UUID_1);
+        const reg = createValidRegistry([existing]);
+
+        const res = planMutation(reg, {
+          type: 'add',
+          character: { name: 'CollisionAvoided' },
+        });
+
+        assert.equal(res.ok, true);
+        assert.equal(callCount, 2); // Retried after collision!
+        assert.equal(res.value.characters[1].id, VALID_UUID_2);
+      } finally {
+        globalThis.crypto.getRandomValues = originalGetRandomValues;
+      }
+    });
+  });
+
+  describe('D. Invalid command robustness', () => {
+    it('returns INVALID_COMMAND without throwing when command type is a Symbol', () => {
+      const reg = createValidRegistry();
+      const sym = Symbol('customCommand');
+      const res = planMutation(reg, { type: sym });
+      assert.equal(res.ok, false);
+      assert.equal(res.code, 'INVALID_COMMAND');
+      assert.match(res.message, /Symbol\(customCommand\)/);
+    });
+
+    it('returns INVALID_COMMAND without throwing for numeric or boolean command types', () => {
+      const reg = createValidRegistry();
+      for (const badType of [123, true, false, null]) {
+        const res = planMutation(reg, { type: badType });
+        assert.equal(res.ok, false);
+        assert.equal(res.code, 'INVALID_COMMAND');
+      }
+    });
+  });
+});

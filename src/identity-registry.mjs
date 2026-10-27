@@ -60,17 +60,32 @@ function deepFreeze(obj) {
 function generateUuidV4() {
   const cryptoObj = globalThis.crypto;
   if (!cryptoObj || typeof cryptoObj.getRandomValues !== 'function') {
-    throw new Error('Cryptographic RNG is unavailable');
+    return {
+      ok: false,
+      code: 'RNG_UNAVAILABLE',
+      message: 'Cryptographic randomness is unavailable',
+      recoverable: false,
+    };
   }
-  const bytes = new Uint8Array(16);
-  cryptoObj.getRandomValues(bytes);
-  bytes[6] = (bytes[6] & 0x0f) | 0x40; // RFC 4122 v4
-  bytes[8] = (bytes[8] & 0x3f) | 0x80; // RFC 4122 variant
-  let hex = '';
-  for (let i = 0; i < 16; i++) {
-    hex += bytes[i].toString(16).padStart(2, '0');
+  try {
+    const bytes = new Uint8Array(16);
+    cryptoObj.getRandomValues(bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40; // RFC 4122 v4
+    bytes[8] = (bytes[8] & 0x3f) | 0x80; // RFC 4122 variant
+    let hex = '';
+    for (let i = 0; i < 16; i++) {
+      hex += bytes[i].toString(16).padStart(2, '0');
+    }
+    const id = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+    return { ok: true, id };
+  } catch (_err) {
+    return {
+      ok: false,
+      code: 'RNG_UNAVAILABLE',
+      message: 'Cryptographic randomness failed',
+      recoverable: false,
+    };
   }
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
 
 function canonicalStringify(obj) {
@@ -223,13 +238,17 @@ function internalValidateRegistry(registry) {
   return { ok: true };
 }
 
-function cloneAndSnapshot(registry) {
-  const characters = registry.characters.map((c) => ({
-    aliases: [...c.aliases],
+function cloneCharacter(c) {
+  return {
+    aliases: Array.isArray(c.aliases) ? [...c.aliases] : [],
     descriptor: c.descriptor,
     id: c.id,
     name: c.name,
-  }));
+  };
+}
+
+function cloneAndSnapshot(registry) {
+  const characters = registry.characters.map(cloneCharacter);
   return deepFreeze({
     characters,
     revision: registry.revision,
@@ -291,17 +310,12 @@ export function resolveIdentity(registry, identityId) {
     };
   }
 
-  if (!registry || typeof registry !== 'object' || !Array.isArray(registry.characters)) {
-    return {
-      ok: false,
-      code: 'IDENTITY_NOT_FOUND',
-      message: 'Identity not found',
-      recoverable: false,
-      details: { identityId },
-    };
+  const regValidation = internalValidateRegistry(registry);
+  if (!regValidation.ok) {
+    return regValidation;
   }
 
-  const character = registry.characters.find((c) => c.id === identityId);
+  const character = registry.characters.find((c) => c && c.id === identityId);
   if (!character) {
     return {
       ok: false,
@@ -314,7 +328,7 @@ export function resolveIdentity(registry, identityId) {
 
   return {
     ok: true,
-    value: character,
+    value: deepFreeze(cloneCharacter(character)),
   };
 }
 
@@ -389,17 +403,15 @@ export function planMutation(registry, command) {
     }
     const aliases = [...rawAliases];
 
-    const newId = generateUuidV4();
-    const candidateChar = {
+    // Validate character attributes before generating UUID
+    const preValidation = validateCharacterRecord({
       aliases,
       descriptor,
-      id: newId,
+      id: '00000000-0000-4000-8000-000000000000',
       name,
-    };
-
-    const charValidation = validateCharacterRecord(candidateChar);
-    if (!charValidation.ok) {
-      return charValidation;
+    });
+    if (!preValidation.ok) {
+      return preValidation;
     }
 
     const nextRevision = registry.revision + 1;
@@ -412,8 +424,38 @@ export function planMutation(registry, command) {
       };
     }
 
+    // Generate unique UUID with collision check
+    const existingIds = new Set(registry.characters.map((c) => c.id));
+    let newId = null;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const rngResult = generateUuidV4();
+      if (!rngResult.ok) {
+        return rngResult;
+      }
+      if (!existingIds.has(rngResult.id)) {
+        newId = rngResult.id;
+        break;
+      }
+    }
+    if (!newId) {
+      return {
+        ok: false,
+        code: 'ID_GENERATION_FAILED',
+        message: 'Failed to generate unique identity ID',
+        recoverable: false,
+      };
+    }
+
+    const candidateChar = {
+      aliases,
+      descriptor,
+      id: newId,
+      name,
+    };
+
+    const nextCharacters = [...registry.characters.map(cloneCharacter), candidateChar];
     const nextSnapshot = deepFreeze({
-      characters: deepFreeze([...registry.characters, deepFreeze(candidateChar)]),
+      characters: nextCharacters,
       revision: nextRevision,
       schemaVersion: 1,
     });
@@ -482,9 +524,10 @@ export function planMutation(registry, command) {
 
     if (isNameSame && isDescSame && isAliasesSame) {
       // Mutation with no actual requested changes must not silently increment revision
+      // Return deeply immutable snapshot without mutating caller-owned registry
       return {
         ok: true,
-        value: registry,
+        value: Object.isFrozen(registry) ? registry : cloneAndSnapshot(registry),
       };
     }
 
@@ -511,11 +554,11 @@ export function planMutation(registry, command) {
     }
 
     const nextCharacters = registry.characters.map((c, i) =>
-      i === targetIndex ? deepFreeze(updatedChar) : c,
+      i === targetIndex ? updatedChar : cloneCharacter(c),
     );
 
     const nextSnapshot = deepFreeze({
-      characters: deepFreeze(nextCharacters),
+      characters: nextCharacters,
       revision: nextRevision,
       schemaVersion: 1,
     });
@@ -574,10 +617,12 @@ export function planMutation(registry, command) {
       };
     }
 
-    const nextCharacters = registry.characters.filter((_, i) => i !== targetIndex);
+    const nextCharacters = registry.characters
+      .filter((_, i) => i !== targetIndex)
+      .map(cloneCharacter);
 
     const nextSnapshot = deepFreeze({
-      characters: deepFreeze(nextCharacters),
+      characters: nextCharacters,
       revision: nextRevision,
       schemaVersion: 1,
     });
@@ -588,10 +633,11 @@ export function planMutation(registry, command) {
     };
   }
 
+  const cmdTypeStr = typeof cmdType === 'symbol' ? cmdType.toString() : String(cmdType);
   return {
     ok: false,
     code: 'INVALID_COMMAND',
-    message: `Unknown command type: ${cmdType}`,
+    message: `Unknown command type: ${cmdTypeStr}`,
     recoverable: false,
   };
 }
