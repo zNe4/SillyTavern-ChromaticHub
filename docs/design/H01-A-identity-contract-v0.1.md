@@ -56,7 +56,7 @@ The entire following value is stored as **data.extensions.chromaticHub**:
 - **schemaVersion**: exact integer **1**. Future/unknown versions are readable only as unsupported, never coerced or overwritten. No implied migration from the H00-C field **chromaticHubH00CProbe**.
 - **revision**: nonnegative safe integer, increased by 1 on each accepted write. **Diagnostic only; this is NOT compare-and-swap.** Clones and imports may have identical revisions.
 - **characters**: ordered array (UI order only; reorder does not change identity), at most **128** entries, no duplicate IDs.
-- **id**: lowercase canonical RFC 4122 UUID v4, generated locally by trusted Hub code via secure cryptographic randomness. Immutable for a record's lifetime on that card. Imported/duplicated cards legitimately retain the IDs. No model-supplied, hash-derived, or name-derived IDs.
+- **id**: lowercase canonical RFC 4122 UUID v4, generated locally by trusted Hub code from **crypto.getRandomValues** (or **crypto.randomUUID** only when available in a secure context) using a tested RFC 4122 v4 formatter; **never Math.random**. Browser deployments over non-local HTTP cannot assume crypto.randomUUID or crypto.subtle are exposed. Immutable for a record's lifetime on that card. Imported/duplicated cards legitimately retain the IDs. No model-supplied, hash-derived, or name-derived IDs.
 - **name**: trimmed nonempty display string (UTF-8 length limit **1–160 bytes**, not UTF-16 units). Not unique; uniqueness is not inferred.
 - **descriptor**: trimmed optional contextual disambiguation, represented as a string (**0–512 UTF-8 bytes**). Can be empty, never used as a key.
 - **aliases**: ordered array of at most **16** nonempty trimmed strings, each **1–160 UTF-8 bytes**. Alias collisions allowed. Duplicate aliases on the same record should be normalized/rejected by a tested policy.
@@ -65,6 +65,8 @@ The entire following value is stored as **data.extensions.chromaticHub**:
 - **no raw text injection**: all names/aliases/descriptors are treated as **untrusted plain text** for rendering and consumer prompts. Never insert into HTML through unsanitized innerHTML.
 
 **Empty card:** absence of data.extensions.chromaticHub means **UNINITIALIZED** and a virtual empty registry for display only. Pure reads MUST NOT create or rewrite a registry. The first explicit successful user mutation materializes it with revision 1. An existing explicit empty registry remains valid.
+
+**Browser transport caveat:** [MDN Crypto.randomUUID](https://developer.mozilla.org/en-US/docs/Web/API/Crypto/randomUUID) is secure-context-only, while [Crypto.getRandomValues](https://developer.mozilla.org/en-US/docs/Web/API/Crypto/getRandomValues) is usable in non-secure contexts. Likewise crypto.subtle cannot be assumed on plain HTTP to a remote SillyTavern host. Test UUID generation and readback comparison on HTTP LAN, localhost and HTTPS. No server secrets are used in UUID generation.
 
 **Value choices still reviewable:** 128 entries, string limits, max registry bytes, strict unknown-field policy and revision field. These are conservative *proposals*, not constraints claimed to have been native-tested.
 
@@ -114,7 +116,7 @@ Pure functions (no network/DOM/data modification):
 - **resolveIdentity(registry, identityId)** → exact UUID match or **IDENTITY_NOT_FOUND**.
 - **searchIdentities(registry, query)** → ranked *suggestions*, possibly **AMBIGUOUS**; never return a silent canonical binding based on name.
 - **planMutation(registry, command)** → validated cloned next value; supported commands **add, update, remove**. Generates UUID only for explicit create. No generic arbitrary property patch from a model.
-- **serializeRegistry(registry)** → canonical document for testing and size checks; no persistent digest as an identity key.
+- **serializeRegistry(registry)** → deterministic canonical JSON representation for exact equality testing and byte-size checks; no persistent digest as an identity key. Any optional SHA-256 audit must have an explicit supported environment or alternative and is never necessary to write.
 
 SillyTavern adapter (network; initial support: one explicitly selected individual card):
 - **readCard(owner)** → **Result<ValidatedSnapshot>** after full /get, with avatar and expected context.
@@ -148,7 +150,7 @@ Do not surface card contents, alias lists, credentials or raw prompt text in rou
 
 1. Require explicit user/direct authorized action, selected target, supported card context, clean editor state (or abort if dirty state cannot be determined), and a valid previously read snapshot.
 2. Serialize Hub mutations **per installed avatar within the current JS instance**. Serializing the Hub queue is **not** a general server lock.
-3. Re-read complete card and compare the registry exactly to the caller's expected snapshot (revision plus canonical representation/hash). Unexpected change = **CONFLICT_DETECTED**, **no write**.
+3. Re-read complete card and compare the registry exactly to the caller's expected snapshot (**revision plus deterministic canonical JSON equality**). A cryptographic digest is **optional diagnostic evidence only**; don't require crypto.subtle, which may be unavailable on non-local HTTP. Unexpected change = **CONFLICT_DETECTED**, **no write**.
 4. Build a full validated replacement for **data.extensions.chromaticHub**; bump revision (bounded; overflow rejects).
 5. Immediately before POST, re-check owner, chat/group context, existence and cancellation. POST only that namespaced field through **/api/characters/merge-attributes** with headers from getRequestHeaders; **do not use writeExtensionField as success signal**, since it mutates in-memory state before checking the server and merely logs non-2xx.
 6. Verify the actual POST status. **Regardless of response**, if a request may have reached the server, independently reread the complete card to classify whether a change persisted. If unable to determine, return **WRITE_UNCERTAIN**, not false success or automatic retry.

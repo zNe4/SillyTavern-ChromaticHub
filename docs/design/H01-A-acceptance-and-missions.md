@@ -27,6 +27,7 @@
 | A18 | Explicit promotion partly succeeds | Visible partial-state/recovery, never automatic duplicate | Deferred, requires H01-C |
 | A19 | Same chatId in distinct owners/groups | Must not alias chat-local NPCs | Deferred source/native acceptance |
 | A20 | Model attempts name-based merge or unattended save | No mutation without explicitly authorized user action | Proposed |
+| A21 | Browser on plain HTTP LAN without crypto.randomUUID/crypto.subtle | Generate UUID v4 from crypto.getRandomValues; compare canonical registry equality; no insecure RNG or unavailable digest dependency | Proposed; native/runtime test required |
 
 ## 2. Design review checklist / owner signoff
 
