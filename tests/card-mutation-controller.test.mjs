@@ -1,5 +1,5 @@
 /**
- * SillyTavern-ChromaticHub: Guarded Mutation Controller Tests (H01-B2-I / H01-B2-R1 / H01-B2-R2)
+ * SillyTavern-ChromaticHub: Guarded Mutation Controller Tests (H01-B2-I / H01-B2-R1 / H01-B2-R2 / H01-B2-R3)
  *
  * Synthetic unit tests covering:
  * - Parameter and mandatory context validation
@@ -14,6 +14,7 @@
  * - Immutability, privacy, and memory safety
  * - H01-B2-R1: Hard deadlines, malformed responses, diagnostic privacy
  * - H01-B2-R2: Fail-closed dependency boundaries & response normalization
+ * - H01-B2-R3: Post-dispatch exception containment & fail-closed inspection
  */
 
 import test from 'node:test';
@@ -2170,6 +2171,607 @@ test('mutateCard - H01-B2-R2 Regression Suite (Fail-Closed Boundaries)', async (
         cleanDeps
       );
       assert.notEqual(checkRes.code, 'CARD_QUARANTINED', 'Avatar must not be quarantined after success');
+    }
+  );
+});
+
+test('mutateCard - Post-Dispatch Exception Containment & Invariant Boundary (H01-B2-R3)', async (t) => {
+  await t.test('Readback status getter throws after HTTP 200 -> WRITE_UNCERTAIN & quarantine', async () => {
+    const avatar = uniqueAvatar('R3_StatusThrows');
+    const otherAvatar = uniqueAvatar('R3_OtherCard1');
+    const secret = 'SUPER_SECRET_STATUS_ERROR_LEAK_TOKEN';
+    const owner = { kind: 'installed-card', avatar };
+    let postCalls = 0;
+
+    let readCallCount = 0;
+    const mockReadCard = async () => {
+      readCallCount++;
+      if (readCallCount === 1) {
+        return { ok: true, status: 'UNINITIALIZED' };
+      }
+      return {
+        get ok() {
+          return true;
+        },
+        get status() {
+          throw new Error(`Trap secret: ${secret}`);
+        },
+        value: { schemaVersion: 1, revision: 1, characters: [] },
+      };
+    };
+
+    const mockFetch = async (url) => {
+      if (url === '/api/characters/merge-attributes') {
+        postCalls++;
+        return { status: 200, ok: true, json: async () => ({ ok: true }) };
+      }
+      return { status: 200, ok: true, json: async () => ({}) };
+    };
+
+    const deps = createValidDependencies({
+      avatar,
+      fetch: mockFetch,
+      readCard: mockReadCard,
+    });
+
+    const res = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'TrapChar' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+
+    // 5. Each failure returns WRITE_UNCERTAIN, not a rejected Promise
+    assert.equal(res.ok, false);
+    assert.equal(res.code, 'WRITE_UNCERTAIN');
+    assert.equal(postCalls, 1, 'Exactly 1 POST dispatch must have occurred');
+
+    // 10. No raw exception messages or secrets appear in returned diagnostics
+    assert.equal(JSON.stringify(res).includes(secret), false, 'Must not leak secret in diagnostics');
+
+    // 6 & 7. A subsequent mutation on the same avatar returns CARD_QUARANTINED and performs zero POSTs
+    let retryPostCalls = 0;
+    const retryFetch = async () => {
+      retryPostCalls++;
+      return { status: 200, ok: true };
+    };
+    const retryDeps = createValidDependencies({ avatar, fetch: retryFetch });
+    const retryRes = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'RetryAfterQuarantine' } },
+      { status: 'UNINITIALIZED' },
+      retryDeps
+    );
+    assert.equal(retryRes.ok, false);
+    assert.equal(retryRes.code, 'CARD_QUARANTINED');
+    assert.equal(retryPostCalls, 0, 'Quarantined avatar must result in zero POST calls');
+
+    // 8. A different avatar remains writable
+    let otherPostCalls = 0;
+    let otherPersisted = null;
+    const otherFetch = createMockFetch({
+      '/api/characters/get': () => ({
+        ok: true,
+        status: 200,
+        json: async () => createMockCard(otherAvatar, otherPersisted ?? undefined),
+      }),
+      '/api/characters/merge-attributes': (_url, options) => {
+        otherPostCalls++;
+        otherPersisted = JSON.parse(options.body).data.extensions.chromaticHub;
+        return { ok: true, status: 200, json: async () => ({ ok: true }) };
+      },
+    });
+    const otherOwner = { kind: 'installed-card', avatar: otherAvatar };
+    const otherDeps = createValidDependencies({ avatar: otherAvatar, fetch: otherFetch });
+    const otherRes = await mutateCard(
+      otherOwner,
+      { type: 'add', character: { name: 'OtherChar' } },
+      { status: 'UNINITIALIZED' },
+      otherDeps
+    );
+    assert.equal(otherRes.ok, true);
+    assert.equal(otherRes.status, 'VALID');
+    assert.equal(otherPostCalls, 1);
+  });
+
+  await t.test('Readback value getter throws after HTTP 200 -> WRITE_UNCERTAIN & quarantine', async () => {
+    const avatar = uniqueAvatar('R3_ValueThrows');
+    const otherAvatar = uniqueAvatar('R3_OtherCard2');
+    const secret = 'SUPER_SECRET_VALUE_ERROR_LEAK_TOKEN';
+    const owner = { kind: 'installed-card', avatar };
+    let postCalls = 0;
+
+    let readCallCount = 0;
+    const mockReadCard = async () => {
+      readCallCount++;
+      if (readCallCount === 1) {
+        return { ok: true, status: 'UNINITIALIZED' };
+      }
+      return {
+        ok: true,
+        status: 'VALID',
+        get value() {
+          throw new Error(`Trap secret: ${secret}`);
+        },
+      };
+    };
+
+    const mockFetch = async (url) => {
+      if (url === '/api/characters/merge-attributes') {
+        postCalls++;
+        return { status: 200, ok: true, json: async () => ({ ok: true }) };
+      }
+      return { status: 200, ok: true, json: async () => ({}) };
+    };
+
+    const deps = createValidDependencies({
+      avatar,
+      fetch: mockFetch,
+      readCard: mockReadCard,
+    });
+
+    const res = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'TrapChar' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+
+    assert.equal(res.ok, false);
+    assert.equal(res.code, 'WRITE_UNCERTAIN');
+    assert.equal(postCalls, 1);
+    assert.equal(JSON.stringify(res).includes(secret), false);
+
+    // Verify quarantine
+    const retryRes = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'Retry' } },
+      { status: 'UNINITIALIZED' },
+      createValidDependencies({ avatar })
+    );
+    assert.equal(retryRes.ok, false);
+    assert.equal(retryRes.code, 'CARD_QUARANTINED');
+
+    // A different avatar remains writable
+    let otherPostCalls = 0;
+    let otherPersisted = null;
+    const otherFetch = createMockFetch({
+      '/api/characters/get': () => ({
+        ok: true,
+        status: 200,
+        json: async () => createMockCard(otherAvatar, otherPersisted ?? undefined),
+      }),
+      '/api/characters/merge-attributes': (_url, options) => {
+        otherPostCalls++;
+        otherPersisted = JSON.parse(options.body).data.extensions.chromaticHub;
+        return { ok: true, status: 200, json: async () => ({ ok: true }) };
+      },
+    });
+    const otherOwner = { kind: 'installed-card', avatar: otherAvatar };
+    const otherDeps = createValidDependencies({ avatar: otherAvatar, fetch: otherFetch });
+    const otherRes = await mutateCard(
+      otherOwner,
+      { type: 'add', character: { name: 'OtherChar' } },
+      { status: 'UNINITIALIZED' },
+      otherDeps
+    );
+    assert.equal(otherRes.ok, true);
+    assert.equal(otherRes.status, 'VALID');
+    assert.equal(otherPostCalls, 1);
+  });
+
+  await t.test('Readback nested snapshot property access throws -> WRITE_UNCERTAIN & quarantine', async () => {
+    const avatar = uniqueAvatar('R3_NestedThrows');
+    const secret = 'SUPER_SECRET_NESTED_ERROR_LEAK_TOKEN';
+    const owner = { kind: 'installed-card', avatar };
+    let postCalls = 0;
+
+    let readCallCount = 0;
+    const mockReadCard = async () => {
+      readCallCount++;
+      if (readCallCount === 1) {
+        return { ok: true, status: 'UNINITIALIZED' };
+      }
+      return {
+        ok: true,
+        status: 'VALID',
+        value: {
+          schemaVersion: 1,
+          get revision() {
+            throw new Error(`Trap secret: ${secret}`);
+          },
+          characters: [],
+        },
+      };
+    };
+
+    const mockFetch = async (url) => {
+      if (url === '/api/characters/merge-attributes') {
+        postCalls++;
+        return { status: 200, ok: true, json: async () => ({ ok: true }) };
+      }
+      return { status: 200, ok: true, json: async () => ({}) };
+    };
+
+    const deps = createValidDependencies({
+      avatar,
+      fetch: mockFetch,
+      readCard: mockReadCard,
+    });
+
+    const res = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'TrapChar' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+
+    assert.equal(res.ok, false);
+    assert.equal(res.code, 'WRITE_UNCERTAIN');
+    assert.equal(postCalls, 1);
+    assert.equal(JSON.stringify(res).includes(secret), false);
+
+    // Verify quarantine
+    const retryRes = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'Retry' } },
+      { status: 'UNINITIALIZED' },
+      createValidDependencies({ avatar })
+    );
+    assert.equal(retryRes.ok, false);
+    assert.equal(retryRes.code, 'CARD_QUARANTINED');
+  });
+
+  await t.test('Canonical comparison cannot complete -> WRITE_UNCERTAIN & quarantine', async () => {
+    const avatar = uniqueAvatar('R3_CanonicalThrows');
+    const secret = 'SUPER_SECRET_CANONICAL_ERROR_LEAK_TOKEN';
+    const owner = { kind: 'installed-card', avatar };
+    let postCalls = 0;
+
+    let readCallCount = 0;
+    const mockReadCard = async () => {
+      readCallCount++;
+      if (readCallCount === 1) {
+        return { ok: true, status: 'UNINITIALIZED' };
+      }
+      return {
+        ok: true,
+        status: 'VALID',
+        value: {
+          schemaVersion: 1,
+          revision: 1,
+          characters: [
+            {
+              get id() {
+                throw new Error(`Trap secret: ${secret}`);
+              },
+              name: 'TrapId',
+            },
+          ],
+        },
+      };
+    };
+
+    const mockFetch = async (url) => {
+      if (url === '/api/characters/merge-attributes') {
+        postCalls++;
+        return { status: 200, ok: true, json: async () => ({ ok: true }) };
+      }
+      return { status: 200, ok: true, json: async () => ({}) };
+    };
+
+    const deps = createValidDependencies({
+      avatar,
+      fetch: mockFetch,
+      readCard: mockReadCard,
+    });
+
+    const res = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'TrapChar' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+
+    assert.equal(res.ok, false);
+    assert.equal(res.code, 'WRITE_UNCERTAIN');
+    assert.equal(postCalls, 1);
+    assert.equal(JSON.stringify(res).includes(secret), false);
+
+    // Verify quarantine
+    const retryRes = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'Retry' } },
+      { status: 'UNINITIALIZED' },
+      createValidDependencies({ avatar })
+    );
+    assert.equal(retryRes.ok, false);
+    assert.equal(retryRes.code, 'CARD_QUARANTINED');
+  });
+
+  await t.test('Readback ok getter throws after HTTP 200 -> WRITE_UNCERTAIN & quarantine', async () => {
+    const avatar = uniqueAvatar('R3_OkThrows');
+    const secret = 'SUPER_SECRET_OK_GETTER_ERROR_LEAK_TOKEN';
+    const owner = { kind: 'installed-card', avatar };
+    let postCalls = 0;
+
+    let readCallCount = 0;
+    const mockReadCard = async () => {
+      readCallCount++;
+      if (readCallCount === 1) {
+        return { ok: true, status: 'UNINITIALIZED' };
+      }
+      return {
+        get ok() {
+          throw new Error(`Trap secret: ${secret}`);
+        },
+      };
+    };
+
+    const mockFetch = async (url) => {
+      if (url === '/api/characters/merge-attributes') {
+        postCalls++;
+        return { status: 200, ok: true, json: async () => ({ ok: true }) };
+      }
+      return { status: 200, ok: true, json: async () => ({}) };
+    };
+
+    const deps = createValidDependencies({
+      avatar,
+      fetch: mockFetch,
+      readCard: mockReadCard,
+    });
+
+    const res = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'TrapChar' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+
+    assert.equal(res.ok, false);
+    assert.equal(res.code, 'WRITE_UNCERTAIN');
+    assert.equal(postCalls, 1);
+    assert.equal(JSON.stringify(res).includes(secret), false);
+
+    // Verify quarantine
+    const retryRes = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'Retry' } },
+      { status: 'UNINITIALIZED' },
+      createValidDependencies({ avatar })
+    );
+    assert.equal(retryRes.ok, false);
+    assert.equal(retryRes.code, 'CARD_QUARANTINED');
+  });
+
+  await t.test(
+    'Dependency property getters throw before dispatch resulting in zero POSTs and no quarantine',
+    async () => {
+      const avatar = uniqueAvatar('R3_DepThrows');
+      const owner = { kind: 'installed-card', avatar };
+      const secret = 'SUPER_SECRET_PRE_DISPATCH_LEAK_TOKEN';
+
+      const testCases = [
+        {
+          name: 'getRequestHeaders getter throws',
+          expectedCode: 'INVALID_DEPENDENCY',
+          createDeps: () => {
+            const base = createValidDependencies({ avatar });
+            Object.defineProperty(base, 'getRequestHeaders', {
+              get() {
+                throw new Error(`Trap secret: ${secret}`);
+              },
+            });
+            return base;
+          },
+        },
+        {
+          name: 'checkEditorSafety getter throws',
+          expectedCode: 'INVALID_DEPENDENCY',
+          createDeps: () => {
+            const base = createValidDependencies({ avatar });
+            Object.defineProperty(base, 'checkEditorSafety', {
+              get() {
+                throw new Error(`Trap secret: ${secret}`);
+              },
+            });
+            return base;
+          },
+        },
+        {
+          name: 'getContext getter throws',
+          expectedCode: 'INVALID_DEPENDENCY',
+          createDeps: () => {
+            const base = createValidDependencies({ avatar });
+            Object.defineProperty(base, 'getContext', {
+              get() {
+                throw new Error(`Trap secret: ${secret}`);
+              },
+            });
+            return base;
+          },
+        },
+        {
+          name: 'expectedContext getter throws',
+          expectedCode: 'INVALID_OPTIONS',
+          createDeps: () => {
+            const base = createValidDependencies({ avatar });
+            Object.defineProperty(base, 'expectedContext', {
+              get() {
+                throw new Error(`Trap secret: ${secret}`);
+              },
+            });
+            return base;
+          },
+        },
+        {
+          name: 'fetch getter throws',
+          expectedCode: 'INVALID_DEPENDENCY',
+          createDeps: () => {
+            const base = createValidDependencies({ avatar });
+            Object.defineProperty(base, 'fetch', {
+              get() {
+                throw new Error(`Trap secret: ${secret}`);
+              },
+            });
+            return base;
+          },
+        },
+        {
+          name: 'readCard getter throws',
+          expectedCode: 'INVALID_DEPENDENCY',
+          createDeps: () => {
+            const base = createValidDependencies({ avatar });
+            Object.defineProperty(base, 'readCard', {
+              get() {
+                throw new Error(`Trap secret: ${secret}`);
+              },
+            });
+            return base;
+          },
+        },
+        {
+          name: 'signal getter throws',
+          expectedCode: 'INVALID_OPTIONS',
+          createDeps: () => {
+            const base = createValidDependencies({ avatar });
+            Object.defineProperty(base, 'signal', {
+              get() {
+                throw new Error(`Trap secret: ${secret}`);
+              },
+            });
+            return base;
+          },
+        },
+        {
+          name: 'postTimeoutMs getter throws',
+          expectedCode: 'INVALID_OPTIONS',
+          createDeps: () => {
+            const base = createValidDependencies({ avatar });
+            Object.defineProperty(base, 'postTimeoutMs', {
+              get() {
+                throw new Error(`Trap secret: ${secret}`);
+              },
+            });
+            return base;
+          },
+        },
+        {
+          name: 'verifyTimeoutMs getter throws',
+          expectedCode: 'INVALID_OPTIONS',
+          createDeps: () => {
+            const base = createValidDependencies({ avatar });
+            Object.defineProperty(base, 'verifyTimeoutMs', {
+              get() {
+                throw new Error(`Trap secret: ${secret}`);
+              },
+            });
+            return base;
+          },
+        },
+      ];
+
+      for (const tc of testCases) {
+        let postCalls = 0;
+        const deps = tc.createDeps();
+        let origFetch;
+        try {
+          origFetch = deps.fetch;
+        } catch (_) {
+          // If accessing deps.fetch was the throwing getter under test, do not wrap
+        }
+        if (typeof origFetch === 'function') {
+          deps.fetch = async (...args) => {
+            postCalls++;
+            return origFetch(...args);
+          };
+        }
+
+        const res = await mutateCard(
+          owner,
+          { type: 'add', character: { name: 'PreDispatchTest' } },
+          { status: 'UNINITIALIZED' },
+          deps
+        );
+
+        assert.equal(res.ok, false, `${tc.name} must return ok: false`);
+        assert.equal(res.code, tc.expectedCode, `${tc.name} must return code ${tc.expectedCode}`);
+        assert.equal(postCalls, 0, `${tc.name} must perform zero network calls`);
+        assert.equal(JSON.stringify(res).includes(secret), false, `${tc.name} must not leak secret`);
+
+        // Confirm avatar is NOT quarantined
+        const cleanDeps = createValidDependencies({ avatar });
+        const checkRes = await mutateCard(
+          owner,
+          { type: 'add', character: { name: 'CleanCheck' } },
+          { status: 'UNINITIALIZED' },
+          cleanDeps
+        );
+        assert.notEqual(
+          checkRes.code,
+          'CARD_QUARANTINED',
+          `${tc.name} must not cause avatar to be quarantined`
+        );
+      }
+    }
+  );
+
+  await t.test(
+    'Unexpected exception after write dispatched returns WRITE_UNCERTAIN and establishes quarantine',
+    async () => {
+      const avatar = uniqueAvatar('R3_PostDispatchThrow');
+      const secret = 'SUPER_SECRET_POST_DISPATCH_LEAK_TOKEN';
+      const owner = { kind: 'installed-card', avatar };
+      let postCalls = 0;
+
+      const mockFetch = async (url) => {
+        if (url === '/api/characters/merge-attributes') {
+          postCalls++;
+          return {
+            get status() {
+              throw new Error(`Trap secret: ${secret}`);
+            },
+            get ok() {
+              throw new Error(`Trap secret: ${secret}`);
+            },
+          };
+        }
+        return { status: 200, ok: true, json: async () => ({}) };
+      };
+
+      const mockReadCard = async () => ({
+        ok: true,
+        status: 'UNINITIALIZED',
+      });
+
+      const deps = createValidDependencies({
+        avatar,
+        fetch: mockFetch,
+        readCard: mockReadCard,
+      });
+
+      const res = await mutateCard(
+        owner,
+        { type: 'add', character: { name: 'TrapChar' } },
+        { status: 'UNINITIALIZED' },
+        deps
+      );
+
+      assert.equal(res.ok, false);
+      assert.equal(res.code, 'WRITE_UNCERTAIN');
+      assert.equal(postCalls, 1);
+      assert.equal(JSON.stringify(res).includes(secret), false);
+
+      // Verify avatar was quarantined
+      const retryRes = await mutateCard(
+        owner,
+        { type: 'add', character: { name: 'Retry' } },
+        { status: 'UNINITIALIZED' },
+        createValidDependencies({ avatar })
+      );
+      assert.equal(retryRes.ok, false);
+      assert.equal(retryRes.code, 'CARD_QUARANTINED');
     }
   );
 });

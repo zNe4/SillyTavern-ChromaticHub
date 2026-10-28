@@ -1,11 +1,12 @@
 /**
- * SillyTavern-ChromaticHub: Guarded Single-Card Mutation Controller (H01-B2-R2)
+ * SillyTavern-ChromaticHub: Guarded Single-Card Mutation Controller (H01-B2-R3)
  *
  * Implements guarded, single-card mutation of data.extensions.chromaticHub.
  * Reuses pure core identity contracts and read-only SillyTavern adapter.
  *
  * Enforces hard network deadlines, quarantine on uncertainty, diagnostic privacy,
- * fail-closed dependency boundaries, and comprehensive resource cleanup.
+ * fail-closed dependency boundaries, post-dispatch exception containment, and
+ * comprehensive resource cleanup.
  */
 
 import { planMutation, serializeRegistry } from './identity-registry.mjs';
@@ -19,6 +20,13 @@ const MAX_VERIFY_TIMEOUT_MS = 30000;
 const PNG_EXTENSION_REGEX = /\.[pP][nN][gG]$/;
 const CONTROL_CHARS_REGEX = /[\x00-\x1f\x7f-\x9f]/;
 const UUID_V4_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+// Operation-phase lifecycle states
+const OP_PHASE = Object.freeze({
+  PRE_DISPATCH: 'PRE_DISPATCH',
+  POST_DISPATCHED: 'POST_DISPATCHED',
+  POST_VERIFYING: 'POST_VERIFYING',
+});
 
 // Module-private queue and quarantine registries
 const avatarQueues = new Map();
@@ -46,191 +54,227 @@ function hasOwnForbiddenPrototypeKeys(obj) {
 }
 
 function validateOwner(owner) {
-  if (!isPlainObject(owner) || hasOwnForbiddenPrototypeKeys(owner)) {
+  try {
+    if (!isPlainObject(owner) || hasOwnForbiddenPrototypeKeys(owner)) {
+      return {
+        ok: false,
+        code: 'INVALID_OWNER',
+        message: 'Owner must be a plain object',
+        recoverable: false,
+      };
+    }
+
+    if (owner.kind !== 'installed-card') {
+      return {
+        ok: false,
+        code: 'INVALID_OWNER',
+        message: 'Owner kind must be "installed-card"',
+        recoverable: false,
+      };
+    }
+
+    if (typeof owner.avatar !== 'string') {
+      return {
+        ok: false,
+        code: 'INVALID_OWNER',
+        message: 'Owner avatar must be a string',
+        recoverable: false,
+      };
+    }
+
+    const avatar = owner.avatar;
+    if (avatar.trim().length === 0) {
+      return {
+        ok: false,
+        code: 'INVALID_OWNER',
+        message: 'Owner avatar cannot be empty',
+        recoverable: false,
+      };
+    }
+
+    if (avatar.includes('/') || avatar.includes('\\')) {
+      return {
+        ok: false,
+        code: 'INVALID_OWNER',
+        message: 'Owner avatar cannot contain path separators',
+        recoverable: false,
+      };
+    }
+
+    if (CONTROL_CHARS_REGEX.test(avatar)) {
+      return {
+        ok: false,
+        code: 'INVALID_OWNER',
+        message: 'Owner avatar cannot contain control characters',
+        recoverable: false,
+      };
+    }
+
+    if (!PNG_EXTENSION_REGEX.test(avatar)) {
+      return {
+        ok: false,
+        code: 'INVALID_OWNER',
+        message: 'Owner avatar must have a .png extension',
+        recoverable: false,
+      };
+    }
+
+    const stem = avatar.slice(0, -4);
+    if (stem.length === 0 || stem === '.' || stem === '..' || stem.trim().length === 0) {
+      return {
+        ok: false,
+        code: 'INVALID_OWNER',
+        message: 'Owner avatar stem cannot be empty or a relative-path sequence',
+        recoverable: false,
+      };
+    }
+
+    return { ok: true, avatar };
+  } catch (_err) {
     return {
       ok: false,
       code: 'INVALID_OWNER',
-      message: 'Owner must be a plain object',
+      message: 'Failed to inspect owner properties',
       recoverable: false,
     };
   }
-
-  if (owner.kind !== 'installed-card') {
-    return {
-      ok: false,
-      code: 'INVALID_OWNER',
-      message: 'Owner kind must be "installed-card"',
-      recoverable: false,
-    };
-  }
-
-  if (typeof owner.avatar !== 'string') {
-    return {
-      ok: false,
-      code: 'INVALID_OWNER',
-      message: 'Owner avatar must be a string',
-      recoverable: false,
-    };
-  }
-
-  const avatar = owner.avatar;
-  if (avatar.trim().length === 0) {
-    return {
-      ok: false,
-      code: 'INVALID_OWNER',
-      message: 'Owner avatar cannot be empty',
-      recoverable: false,
-    };
-  }
-
-  if (avatar.includes('/') || avatar.includes('\\')) {
-    return {
-      ok: false,
-      code: 'INVALID_OWNER',
-      message: 'Owner avatar cannot contain path separators',
-      recoverable: false,
-    };
-  }
-
-  if (CONTROL_CHARS_REGEX.test(avatar)) {
-    return {
-      ok: false,
-      code: 'INVALID_OWNER',
-      message: 'Owner avatar cannot contain control characters',
-      recoverable: false,
-    };
-  }
-
-  if (!PNG_EXTENSION_REGEX.test(avatar)) {
-    return {
-      ok: false,
-      code: 'INVALID_OWNER',
-      message: 'Owner avatar must have a .png extension',
-      recoverable: false,
-    };
-  }
-
-  const stem = avatar.slice(0, -4);
-  if (stem.length === 0 || stem === '.' || stem === '..' || stem.trim().length === 0) {
-    return {
-      ok: false,
-      code: 'INVALID_OWNER',
-      message: 'Owner avatar stem cannot be empty or a relative-path sequence',
-      recoverable: false,
-    };
-  }
-
-  return { ok: true, avatar };
 }
 
 function validateCommand(command) {
-  if (!isPlainObject(command) || hasOwnForbiddenPrototypeKeys(command)) {
+  try {
+    if (!isPlainObject(command) || hasOwnForbiddenPrototypeKeys(command)) {
+      return {
+        ok: false,
+        code: 'INVALID_COMMAND',
+        message: 'Command must be a plain object',
+        recoverable: false,
+      };
+    }
+
+    const type = command.type;
+    if (type !== 'add' && type !== 'update' && type !== 'remove') {
+      return {
+        ok: false,
+        code: 'INVALID_COMMAND',
+        message: `Unknown command type: ${String(type)}`,
+        recoverable: false,
+      };
+    }
+
+    if (type === 'add') {
+      if (!isPlainObject(command.character) || hasOwnForbiddenPrototypeKeys(command.character)) {
+        return {
+          ok: false,
+          code: 'INVALID_COMMAND',
+          message: 'character must be a plain object on add',
+          recoverable: false,
+        };
+      }
+      if (Object.prototype.hasOwnProperty.call(command.character, 'id')) {
+        return {
+          ok: false,
+          code: 'INVALID_COMMAND',
+          message: 'Caller-supplied identity ID is forbidden on add',
+          recoverable: false,
+        };
+      }
+    }
+
+    if (type === 'update') {
+      if (!isPlainObject(command.character) || hasOwnForbiddenPrototypeKeys(command.character)) {
+        return {
+          ok: false,
+          code: 'INVALID_COMMAND',
+          message: 'character must be a plain object on update',
+          recoverable: false,
+        };
+      }
+      if (typeof command.character.id !== 'string' || !UUID_V4_REGEX.test(command.character.id)) {
+        return {
+          ok: false,
+          code: 'INVALID_COMMAND',
+          message: 'Valid identity ID required on update character',
+          recoverable: false,
+        };
+      }
+    }
+
+    if (type === 'remove') {
+      if (typeof command.identityId !== 'string' || !UUID_V4_REGEX.test(command.identityId)) {
+        return {
+          ok: false,
+          code: 'INVALID_COMMAND',
+          message: 'Valid identityId required on remove',
+          recoverable: false,
+        };
+      }
+    }
+
+    return { ok: true };
+  } catch (_err) {
     return {
       ok: false,
       code: 'INVALID_COMMAND',
-      message: 'Command must be a plain object',
+      message: 'Failed to inspect command properties',
       recoverable: false,
     };
   }
-
-  const type = command.type;
-  if (type !== 'add' && type !== 'update' && type !== 'remove') {
-    return {
-      ok: false,
-      code: 'INVALID_COMMAND',
-      message: `Unknown command type: ${String(type)}`,
-      recoverable: false,
-    };
-  }
-
-  if (type === 'add') {
-    if (!isPlainObject(command.character) || hasOwnForbiddenPrototypeKeys(command.character)) {
-      return {
-        ok: false,
-        code: 'INVALID_COMMAND',
-        message: 'character must be a plain object on add',
-        recoverable: false,
-      };
-    }
-    if (Object.prototype.hasOwnProperty.call(command.character, 'id')) {
-      return {
-        ok: false,
-        code: 'INVALID_COMMAND',
-        message: 'Caller-supplied identity ID is forbidden on add',
-        recoverable: false,
-      };
-    }
-  }
-
-  if (type === 'update') {
-    if (!isPlainObject(command.character) || hasOwnForbiddenPrototypeKeys(command.character)) {
-      return {
-        ok: false,
-        code: 'INVALID_COMMAND',
-        message: 'character must be a plain object on update',
-        recoverable: false,
-      };
-    }
-    if (typeof command.character.id !== 'string' || !UUID_V4_REGEX.test(command.character.id)) {
-      return {
-        ok: false,
-        code: 'INVALID_COMMAND',
-        message: 'Valid identity ID required on update character',
-        recoverable: false,
-      };
-    }
-  }
-
-  if (type === 'remove') {
-    if (typeof command.identityId !== 'string' || !UUID_V4_REGEX.test(command.identityId)) {
-      return {
-        ok: false,
-        code: 'INVALID_COMMAND',
-        message: 'Valid identityId required on remove',
-        recoverable: false,
-      };
-    }
-  }
-
-  return { ok: true };
 }
 
 function validateExpectedSnapshot(expectedSnapshot) {
-  if (!isPlainObject(expectedSnapshot) || hasOwnForbiddenPrototypeKeys(expectedSnapshot)) {
-    return {
-      ok: false,
-      code: 'INVALID_OPTIONS',
-      message: 'expectedSnapshot must be a plain object',
-      recoverable: false,
-    };
-  }
-
-  const status = expectedSnapshot.status;
-  if (status !== 'UNINITIALIZED' && status !== 'VALID') {
-    return {
-      ok: false,
-      code: 'INVALID_OPTIONS',
-      message: 'expectedSnapshot.status must be "UNINITIALIZED" or "VALID"',
-      recoverable: false,
-    };
-  }
-
-  if (status === 'VALID') {
-    if (!isPlainObject(expectedSnapshot.value)) {
+  try {
+    if (!isPlainObject(expectedSnapshot) || hasOwnForbiddenPrototypeKeys(expectedSnapshot)) {
       return {
         ok: false,
         code: 'INVALID_OPTIONS',
-        message: 'expectedSnapshot.value must be a valid registry object when status is "VALID"',
+        message: 'expectedSnapshot must be a plain object',
         recoverable: false,
       };
     }
-  }
 
-  return { ok: true };
+    const status = expectedSnapshot.status;
+    if (status !== 'UNINITIALIZED' && status !== 'VALID') {
+      return {
+        ok: false,
+        code: 'INVALID_OPTIONS',
+        message: 'expectedSnapshot.status must be "UNINITIALIZED" or "VALID"',
+        recoverable: false,
+      };
+    }
+
+    if (status === 'VALID') {
+      if (!isPlainObject(expectedSnapshot.value)) {
+        return {
+          ok: false,
+          code: 'INVALID_OPTIONS',
+          message: 'expectedSnapshot.value must be a valid registry object when status is "VALID"',
+          recoverable: false,
+        };
+      }
+    }
+
+    return { ok: true };
+  } catch (_err) {
+    return {
+      ok: false,
+      code: 'INVALID_OPTIONS',
+      message: 'Failed to inspect expectedSnapshot properties',
+      recoverable: false,
+    };
+  }
 }
 
 function validateDependencies(dependencies) {
-  if (!isPlainObject(dependencies) || hasOwnForbiddenPrototypeKeys(dependencies)) {
+  try {
+    if (!isPlainObject(dependencies) || hasOwnForbiddenPrototypeKeys(dependencies)) {
+      return {
+        ok: false,
+        code: 'INVALID_DEPENDENCY',
+        message: 'dependencies must be a plain object',
+        recoverable: false,
+      };
+    }
+  } catch (_err) {
     return {
       ok: false,
       code: 'INVALID_DEPENDENCY',
@@ -239,7 +283,18 @@ function validateDependencies(dependencies) {
     };
   }
 
-  if (typeof dependencies.getRequestHeaders !== 'function') {
+  let getRequestHeaders;
+  try {
+    getRequestHeaders = dependencies.getRequestHeaders;
+  } catch (_err) {
+    return {
+      ok: false,
+      code: 'INVALID_DEPENDENCY',
+      message: 'Failed to access getRequestHeaders dependency',
+      recoverable: false,
+    };
+  }
+  if (typeof getRequestHeaders !== 'function') {
     return {
       ok: false,
       code: 'INVALID_DEPENDENCY',
@@ -248,7 +303,18 @@ function validateDependencies(dependencies) {
     };
   }
 
-  if (typeof dependencies.checkEditorSafety !== 'function') {
+  let checkEditorSafety;
+  try {
+    checkEditorSafety = dependencies.checkEditorSafety;
+  } catch (_err) {
+    return {
+      ok: false,
+      code: 'INVALID_DEPENDENCY',
+      message: 'Failed to access checkEditorSafety dependency',
+      recoverable: false,
+    };
+  }
+  if (typeof checkEditorSafety !== 'function') {
     return {
       ok: false,
       code: 'INVALID_DEPENDENCY',
@@ -257,7 +323,18 @@ function validateDependencies(dependencies) {
     };
   }
 
-  if (typeof dependencies.getContext !== 'function') {
+  let getContext;
+  try {
+    getContext = dependencies.getContext;
+  } catch (_err) {
+    return {
+      ok: false,
+      code: 'INVALID_DEPENDENCY',
+      message: 'Failed to access getContext dependency',
+      recoverable: false,
+    };
+  }
+  if (typeof getContext !== 'function') {
     return {
       ok: false,
       code: 'INVALID_DEPENDENCY',
@@ -266,7 +343,28 @@ function validateDependencies(dependencies) {
     };
   }
 
-  if (!isPlainObject(dependencies.expectedContext) || hasOwnForbiddenPrototypeKeys(dependencies.expectedContext)) {
+  let expectedContext;
+  try {
+    expectedContext = dependencies.expectedContext;
+  } catch (_err) {
+    return {
+      ok: false,
+      code: 'INVALID_OPTIONS',
+      message: 'Failed to access expectedContext dependency',
+      recoverable: false,
+    };
+  }
+
+  try {
+    if (!isPlainObject(expectedContext) || hasOwnForbiddenPrototypeKeys(expectedContext)) {
+      return {
+        ok: false,
+        code: 'INVALID_OPTIONS',
+        message: 'dependencies.expectedContext must be a plain object',
+        recoverable: false,
+      };
+    }
+  } catch (_err) {
     return {
       ok: false,
       code: 'INVALID_OPTIONS',
@@ -277,7 +375,7 @@ function validateDependencies(dependencies) {
 
   let keys;
   try {
-    keys = Object.keys(dependencies.expectedContext);
+    keys = Object.keys(expectedContext);
   } catch (_err) {
     return {
       ok: false,
@@ -301,11 +399,11 @@ function validateDependencies(dependencies) {
   let hasCharAvatar = false;
   try {
     hasDirectAvatar =
-      typeof dependencies.expectedContext.avatar === 'string' &&
-      dependencies.expectedContext.avatar.trim().length > 0;
+      typeof expectedContext.avatar === 'string' &&
+      expectedContext.avatar.trim().length > 0;
     hasCharAvatar =
-      Array.isArray(dependencies.expectedContext.characters) &&
-      typeof dependencies.expectedContext.characterId === 'number';
+      Array.isArray(expectedContext.characters) &&
+      typeof expectedContext.characterId === 'number';
   } catch (_err) {
     return {
       ok: false,
@@ -324,7 +422,18 @@ function validateDependencies(dependencies) {
     };
   }
 
-  if (dependencies.fetch !== undefined && typeof dependencies.fetch !== 'function') {
+  let fetchFn;
+  try {
+    fetchFn = dependencies.fetch;
+  } catch (_err) {
+    return {
+      ok: false,
+      code: 'INVALID_DEPENDENCY',
+      message: 'Failed to access fetch dependency',
+      recoverable: false,
+    };
+  }
+  if (fetchFn !== undefined && typeof fetchFn !== 'function') {
     return {
       ok: false,
       code: 'INVALID_DEPENDENCY',
@@ -333,7 +442,18 @@ function validateDependencies(dependencies) {
     };
   }
 
-  if (dependencies.readCard !== undefined && typeof dependencies.readCard !== 'function') {
+  let readCardFn;
+  try {
+    readCardFn = dependencies.readCard;
+  } catch (_err) {
+    return {
+      ok: false,
+      code: 'INVALID_DEPENDENCY',
+      message: 'Failed to access readCard dependency',
+      recoverable: false,
+    };
+  }
+  if (readCardFn !== undefined && typeof readCardFn !== 'function') {
     return {
       ok: false,
       code: 'INVALID_DEPENDENCY',
@@ -342,35 +462,54 @@ function validateDependencies(dependencies) {
     };
   }
 
+  let signal;
   try {
-    if (
-      dependencies.signal !== undefined &&
-      (dependencies.signal === null ||
-        typeof dependencies.signal !== 'object' ||
-        typeof dependencies.signal.aborted !== 'boolean')
-    ) {
-      return {
-        ok: false,
-        code: 'INVALID_OPTIONS',
-        message: 'dependencies.signal must be an AbortSignal instance',
-        recoverable: false,
-      };
-    }
+    signal = dependencies.signal;
   } catch (_err) {
     return {
       ok: false,
       code: 'INVALID_OPTIONS',
-      message: 'dependencies.signal property evaluation threw',
+      message: 'Failed to access signal option',
       recoverable: false,
     };
   }
+  if (signal !== undefined) {
+    try {
+      if (signal === null || typeof signal !== 'object' || typeof signal.aborted !== 'boolean') {
+        return {
+          ok: false,
+          code: 'INVALID_OPTIONS',
+          message: 'dependencies.signal must be an AbortSignal instance',
+          recoverable: false,
+        };
+      }
+    } catch (_err) {
+      return {
+        ok: false,
+        code: 'INVALID_OPTIONS',
+        message: 'dependencies.signal property evaluation threw',
+        recoverable: false,
+      };
+    }
+  }
 
-  if (dependencies.postTimeoutMs !== undefined) {
+  let postTimeoutMs;
+  try {
+    postTimeoutMs = dependencies.postTimeoutMs;
+  } catch (_err) {
+    return {
+      ok: false,
+      code: 'INVALID_OPTIONS',
+      message: 'Failed to access postTimeoutMs option',
+      recoverable: false,
+    };
+  }
+  if (postTimeoutMs !== undefined) {
     if (
-      typeof dependencies.postTimeoutMs !== 'number' ||
-      !Number.isSafeInteger(dependencies.postTimeoutMs) ||
-      dependencies.postTimeoutMs <= 0 ||
-      dependencies.postTimeoutMs > MAX_POST_TIMEOUT_MS
+      typeof postTimeoutMs !== 'number' ||
+      !Number.isSafeInteger(postTimeoutMs) ||
+      postTimeoutMs <= 0 ||
+      postTimeoutMs > MAX_POST_TIMEOUT_MS
     ) {
       return {
         ok: false,
@@ -381,12 +520,23 @@ function validateDependencies(dependencies) {
     }
   }
 
-  if (dependencies.verifyTimeoutMs !== undefined) {
+  let verifyTimeoutMs;
+  try {
+    verifyTimeoutMs = dependencies.verifyTimeoutMs;
+  } catch (_err) {
+    return {
+      ok: false,
+      code: 'INVALID_OPTIONS',
+      message: 'Failed to access verifyTimeoutMs option',
+      recoverable: false,
+    };
+  }
+  if (verifyTimeoutMs !== undefined) {
     if (
-      typeof dependencies.verifyTimeoutMs !== 'number' ||
-      !Number.isSafeInteger(dependencies.verifyTimeoutMs) ||
-      dependencies.verifyTimeoutMs <= 0 ||
-      dependencies.verifyTimeoutMs > MAX_VERIFY_TIMEOUT_MS
+      typeof verifyTimeoutMs !== 'number' ||
+      !Number.isSafeInteger(verifyTimeoutMs) ||
+      verifyTimeoutMs <= 0 ||
+      verifyTimeoutMs > MAX_VERIFY_TIMEOUT_MS
     ) {
       return {
         ok: false,
@@ -633,6 +783,176 @@ async function acquireQueueLock(avatar, userSignal) {
   return { ok: true, release };
 }
 
+function inspectReadback(readback, rawReadbackFailed, preRead, planResult) {
+  if (rawReadbackFailed) {
+    return {
+      readbackFailed: true,
+      inspectionFailed: false,
+      readbackMatchesNext: false,
+      readbackMatchesOld: false,
+    };
+  }
+
+  let isOk = false;
+  try {
+    if (!readback || typeof readback !== 'object') {
+      return {
+        readbackFailed: true,
+        inspectionFailed: false,
+        readbackMatchesNext: false,
+        readbackMatchesOld: false,
+      };
+    }
+    isOk = readback.ok === true;
+  } catch (_err) {
+    return {
+      readbackFailed: true,
+      inspectionFailed: true,
+      readbackMatchesNext: false,
+      readbackMatchesOld: false,
+    };
+  }
+
+  if (!isOk) {
+    return {
+      readbackFailed: true,
+      inspectionFailed: false,
+      readbackMatchesNext: false,
+      readbackMatchesOld: false,
+    };
+  }
+
+  let status;
+  try {
+    status = readback.status;
+  } catch (_err) {
+    return {
+      readbackFailed: true,
+      inspectionFailed: true,
+      readbackMatchesNext: false,
+      readbackMatchesOld: false,
+    };
+  }
+
+  let value;
+  try {
+    value = readback.value;
+  } catch (_err) {
+    return {
+      readbackFailed: true,
+      inspectionFailed: true,
+      readbackMatchesNext: false,
+      readbackMatchesOld: false,
+    };
+  }
+
+  if (status !== 'VALID' && status !== 'UNINITIALIZED') {
+    return {
+      readbackFailed: true,
+      inspectionFailed: true,
+      readbackMatchesNext: false,
+      readbackMatchesOld: false,
+    };
+  }
+
+  let readbackMatchesNext = false;
+  let readbackMatchesOld = false;
+
+  if (status === 'VALID') {
+    if (!isPlainObject(value) || hasOwnForbiddenPrototypeKeys(value)) {
+      return {
+        readbackFailed: true,
+        inspectionFailed: true,
+        readbackMatchesNext: false,
+        readbackMatchesOld: false,
+      };
+    }
+
+    // Check match next
+    try {
+      if (planResult && planResult.value) {
+        const planSer = serializeRegistry(planResult.value);
+        if (!planSer.ok) {
+          return {
+            readbackFailed: true,
+            inspectionFailed: true,
+            readbackMatchesNext: false,
+            readbackMatchesOld: false,
+          };
+        }
+        const valSer = serializeRegistry(value);
+        if (!valSer.ok) {
+          return {
+            readbackFailed: true,
+            inspectionFailed: true,
+            readbackMatchesNext: false,
+            readbackMatchesOld: false,
+          };
+        }
+        if (value.revision === planResult.value.revision && valSer.value === planSer.value) {
+          readbackMatchesNext = true;
+        }
+      }
+    } catch (_err) {
+      return {
+        readbackFailed: true,
+        inspectionFailed: true,
+        readbackMatchesNext: false,
+        readbackMatchesOld: false,
+      };
+    }
+
+    // Check match old
+    if (!readbackMatchesNext && preRead) {
+      if (preRead.status === 'VALID') {
+        try {
+          const preSer = serializeRegistry(preRead.value);
+          if (!preSer.ok) {
+            return {
+              readbackFailed: true,
+              inspectionFailed: true,
+              readbackMatchesNext: false,
+              readbackMatchesOld: false,
+            };
+          }
+          const valSer = serializeRegistry(value);
+          if (!valSer.ok) {
+            return {
+              readbackFailed: true,
+              inspectionFailed: true,
+              readbackMatchesNext: false,
+              readbackMatchesOld: false,
+            };
+          }
+          if (value.revision === preRead.value.revision && valSer.value === preSer.value) {
+            readbackMatchesOld = true;
+          }
+        } catch (_err) {
+          return {
+            readbackFailed: true,
+            inspectionFailed: true,
+            readbackMatchesNext: false,
+            readbackMatchesOld: false,
+          };
+        }
+      }
+    }
+  } else if (status === 'UNINITIALIZED') {
+    if (preRead && preRead.status === 'UNINITIALIZED') {
+      readbackMatchesOld = true;
+    }
+  }
+
+  return {
+    readbackFailed: false,
+    inspectionFailed: false,
+    readbackMatchesNext,
+    readbackMatchesOld,
+    value,
+    status,
+  };
+}
+
 /**
  * Executes a guarded, single-card mutation against SillyTavern's card storage.
  *
@@ -643,58 +963,75 @@ async function acquireQueueLock(avatar, userSignal) {
  * @returns {Promise<object>} Discriminated result
  */
 export async function mutateCard(owner, command, expectedSnapshot, dependencies) {
-  // 1. Parameter & Dependency Validations
-  const ownerVal = validateOwner(owner);
-  if (!ownerVal.ok) return ownerVal;
-
-  const cmdVal = validateCommand(command);
-  if (!cmdVal.ok) return cmdVal;
-
-  const expVal = validateExpectedSnapshot(expectedSnapshot);
-  if (!expVal.ok) return expVal;
-
-  const depsVal = validateDependencies(dependencies);
-  if (!depsVal.ok) return depsVal;
-
-  const avatar = owner.avatar;
-
-  // 2. Preflight Quarantine Check (Optimization)
-  if (quarantinedAvatars.has(avatar)) {
-    return {
-      ok: false,
-      code: 'CARD_QUARANTINED',
-      message: `Card "${avatar}" is quarantined due to a previous unresolved write. Mutations blocked until manual recovery.`,
-      recoverable: false,
-      details: { avatar },
-    };
-  }
-
-  // 3. Preflight Context Check
-  const preCtx = evaluateContext(owner, dependencies.expectedContext, dependencies.getContext);
-  if (!preCtx.ok) return preCtx;
-
-  // 4. Preflight Editor Safety Check
-  const preEditor = evaluateEditorSafety(owner, dependencies.checkEditorSafety);
-  if (!preEditor.ok) return preEditor;
-
-  // 5. Preflight Cancellation Check
-  if (dependencies.signal?.aborted) {
-    return {
-      ok: false,
-      code: 'OPERATION_CANCELLED',
-      message: 'Operation cancelled',
-      recoverable: false,
-    };
-  }
-
-  // 6. Acquire Queue Lock
-  const lockResult = await acquireQueueLock(avatar, dependencies.signal);
-  if (!lockResult.ok) {
-    return lockResult;
-  }
-  const releaseQueue = lockResult.release;
+  let opPhase = OP_PHASE.PRE_DISPATCH;
+  let avatar = null;
+  let releaseQueue = null;
+  let preRead = null;
+  let planResult = null;
+  let readbackAttempted = false;
+  let normalizedStatus = null;
 
   try {
+    // 1. Parameter & Dependency Validations
+    const ownerVal = validateOwner(owner);
+    if (!ownerVal.ok) return ownerVal;
+
+    const cmdVal = validateCommand(command);
+    if (!cmdVal.ok) return cmdVal;
+
+    const expVal = validateExpectedSnapshot(expectedSnapshot);
+    if (!expVal.ok) return expVal;
+
+    const depsVal = validateDependencies(dependencies);
+    if (!depsVal.ok) return depsVal;
+
+    avatar = ownerVal.avatar ?? owner.avatar;
+
+    // 2. Preflight Quarantine Check (Optimization)
+    if (quarantinedAvatars.has(avatar)) {
+      return {
+        ok: false,
+        code: 'CARD_QUARANTINED',
+        message: `Card "${avatar}" is quarantined due to a previous unresolved write. Mutations blocked until manual recovery.`,
+        recoverable: false,
+        details: { avatar },
+      };
+    }
+
+    // 3. Preflight Context Check
+    const preCtx = evaluateContext(owner, dependencies.expectedContext, dependencies.getContext);
+    if (!preCtx.ok) return preCtx;
+
+    // 4. Preflight Editor Safety Check
+    const preEditor = evaluateEditorSafety(owner, dependencies.checkEditorSafety);
+    if (!preEditor.ok) return preEditor;
+
+    // 5. Preflight Cancellation Check
+    try {
+      if (dependencies.signal?.aborted) {
+        return {
+          ok: false,
+          code: 'OPERATION_CANCELLED',
+          message: 'Operation cancelled',
+          recoverable: false,
+        };
+      }
+    } catch (_err) {
+      return {
+        ok: false,
+        code: 'OPERATION_CANCELLED',
+        message: 'Operation cancelled',
+        recoverable: false,
+      };
+    }
+
+    // 6. Acquire Queue Lock
+    const lockResult = await acquireQueueLock(avatar, dependencies.signal);
+    if (!lockResult.ok) {
+      return lockResult;
+    }
+    releaseQueue = lockResult.release;
+
     // 7. Post-Queue Authoritative Quarantine Check
     if (quarantinedAvatars.has(avatar)) {
       return {
@@ -715,7 +1052,16 @@ export async function mutateCard(owner, command, expectedSnapshot, dependencies)
     if (!postQueueEditor.ok) return postQueueEditor;
 
     // 10. Post-Queue Cancellation Recheck
-    if (dependencies.signal?.aborted) {
+    try {
+      if (dependencies.signal?.aborted) {
+        return {
+          ok: false,
+          code: 'OPERATION_CANCELLED',
+          message: 'Operation cancelled',
+          recoverable: false,
+        };
+      }
+    } catch (_err) {
       return {
         ok: false,
         code: 'OPERATION_CANCELLED',
@@ -727,7 +1073,7 @@ export async function mutateCard(owner, command, expectedSnapshot, dependencies)
     // 11. Pre-Read Card
     const readCardFn = dependencies.readCard || defaultReadCard;
     const fetchFn = dependencies.fetch || globalThis.fetch;
-    const preRead = await readCardFn(owner, {
+    preRead = await readCardFn(owner, {
       getRequestHeaders: dependencies.getRequestHeaders,
       fetch: fetchFn,
       signal: dependencies.signal,
@@ -788,7 +1134,7 @@ export async function mutateCard(owner, command, expectedSnapshot, dependencies)
     }
 
     // 13. Plan Mutation with Pure Core
-    const planResult = planMutation(preRead.value, command);
+    planResult = planMutation(preRead.value, command);
     if (!planResult.ok) {
       return planResult;
     }
@@ -815,7 +1161,16 @@ export async function mutateCard(owner, command, expectedSnapshot, dependencies)
     }
 
     // 15. Pre-Dispatch Rechecks
-    if (dependencies.signal?.aborted) {
+    try {
+      if (dependencies.signal?.aborted) {
+        return {
+          ok: false,
+          code: 'OPERATION_CANCELLED',
+          message: 'Operation cancelled',
+          recoverable: false,
+        };
+      }
+    } catch (_err) {
       return {
         ok: false,
         code: 'OPERATION_CANCELLED',
@@ -901,6 +1256,9 @@ export async function mutateCard(owner, command, expectedSnapshot, dependencies)
     let postResponse = null;
     let postOutcome = 'COMPLETED';
 
+    // Set post-attempt state before invoking transport
+    opPhase = OP_PHASE.POST_DISPATCHED;
+
     try {
       const postDeadlinePromise = new Promise((_, reject) => {
         postTimer = setTimeout(() => {
@@ -945,9 +1303,6 @@ export async function mutateCard(owner, command, expectedSnapshot, dependencies)
     }
 
     // Guarded POST response normalization
-    let normalizedStatus = null;
-    let isNormalizedOk = false;
-
     if (postOutcome === 'COMPLETED') {
       try {
         if (!postResponse || typeof postResponse !== 'object') {
@@ -965,7 +1320,6 @@ export async function mutateCard(owner, command, expectedSnapshot, dependencies)
             rawOk === (rawStatus >= 200 && rawStatus <= 299)
           ) {
             normalizedStatus = rawStatus;
-            isNormalizedOk = rawOk;
           } else {
             postOutcome = 'UNKNOWN';
           }
@@ -974,6 +1328,9 @@ export async function mutateCard(owner, command, expectedSnapshot, dependencies)
         postOutcome = 'UNKNOWN';
       }
     }
+
+    // POST completed and persistence verification is being evaluated
+    opPhase = OP_PHASE.POST_VERIFYING;
 
     // 18. Hard-Bounded Independent Verification Readback
     const verifyTimeoutMs = dependencies.verifyTimeoutMs ?? DEFAULT_VERIFY_TIMEOUT_MS;
@@ -984,6 +1341,7 @@ export async function mutateCard(owner, command, expectedSnapshot, dependencies)
     let readbackFailed = false;
 
     try {
+      readbackAttempted = true;
       const verifyDeadlinePromise = new Promise((_, reject) => {
         verifyTimer = setTimeout(() => {
           verifyController.abort();
@@ -1003,9 +1361,6 @@ export async function mutateCard(owner, command, expectedSnapshot, dependencies)
       rawReadPromise.catch(() => {});
 
       readback = await Promise.race([rawReadPromise, verifyDeadlinePromise]);
-      if (!readback || !readback.ok) {
-        readbackFailed = true;
-      }
     } catch (_err) {
       readbackFailed = true;
     } finally {
@@ -1015,22 +1370,18 @@ export async function mutateCard(owner, command, expectedSnapshot, dependencies)
       }
     }
 
-    const readbackMatchesNext =
-      !readbackFailed &&
-      readback.status === 'VALID' &&
-      readback.value?.revision === planResult.value.revision &&
-      serializeRegistry(readback.value).value === serializeRegistry(planResult.value).value;
+    // Guarded Readback Result Inspection
+    const inspection = inspectReadback(readback, readbackFailed, preRead, planResult);
 
-    let readbackMatchesOld = false;
-    if (!readbackFailed) {
-      if (preRead.status === 'UNINITIALIZED') {
-        readbackMatchesOld = readback.status === 'UNINITIALIZED';
-      } else {
-        readbackMatchesOld =
-          readback.status === 'VALID' &&
-          readback.value?.revision === preRead.value.revision &&
-          serializeRegistry(readback.value).value === serializeRegistry(preRead.value).value;
-      }
+    if (inspection.inspectionFailed) {
+      quarantinedAvatars.add(avatar);
+      return {
+        ok: false,
+        code: 'WRITE_UNCERTAIN',
+        message: 'Persistence verification failed unexpectedly after write dispatch',
+        recoverable: false,
+        details: normalizedStatus !== null ? { httpStatus: normalizedStatus } : { postOutcome: 'UNKNOWN' },
+      };
     }
 
     // 19. Decision Table Evaluation
@@ -1038,7 +1389,7 @@ export async function mutateCard(owner, command, expectedSnapshot, dependencies)
     // Category C: POST Completion Unknown (Timeout, Abort, Network Loss, Malformed Response)
     if (postOutcome === 'UNKNOWN') {
       quarantinedAvatars.add(avatar);
-      if (readbackMatchesNext) {
+      if (inspection.readbackMatchesNext) {
         return {
           ok: false,
           code: 'WRITE_UNCERTAIN',
@@ -1047,7 +1398,7 @@ export async function mutateCard(owner, command, expectedSnapshot, dependencies)
           details: { persistedObserved: true, postOutcome: 'UNKNOWN' },
         };
       }
-      if (readbackMatchesOld) {
+      if (inspection.readbackMatchesOld) {
         return {
           ok: false,
           code: 'WRITE_UNCERTAIN',
@@ -1068,7 +1419,7 @@ export async function mutateCard(owner, command, expectedSnapshot, dependencies)
 
     // Category B: POST completed with a valid HTTP response
     if (normalizedStatus === 200) {
-      if (readbackMatchesNext) {
+      if (inspection.readbackMatchesNext) {
         const postVerifyCtx = evaluateContext(owner, dependencies.expectedContext, dependencies.getContext);
         if (!postVerifyCtx.ok) {
           return {
@@ -1083,12 +1434,12 @@ export async function mutateCard(owner, command, expectedSnapshot, dependencies)
         return {
           ok: true,
           status: 'VALID',
-          value: readback.value,
+          value: inspection.value,
           avatar,
         };
       }
 
-      if (readbackMatchesOld) {
+      if (inspection.readbackMatchesOld) {
         return {
           ok: false,
           code: 'READBACK_MISMATCH',
@@ -1098,7 +1449,7 @@ export async function mutateCard(owner, command, expectedSnapshot, dependencies)
         };
       }
 
-      if (readbackFailed) {
+      if (inspection.readbackFailed) {
         quarantinedAvatars.add(avatar);
         return {
           ok: false,
@@ -1120,7 +1471,7 @@ export async function mutateCard(owner, command, expectedSnapshot, dependencies)
 
     // Completed with HTTP rejection (4xx / 5xx)
     const httpStatus = normalizedStatus;
-    if (readbackMatchesOld) {
+    if (inspection.readbackMatchesOld) {
       return {
         ok: false,
         code: 'WRITE_REJECTED',
@@ -1130,7 +1481,7 @@ export async function mutateCard(owner, command, expectedSnapshot, dependencies)
       };
     }
 
-    if (readbackMatchesNext) {
+    if (inspection.readbackMatchesNext) {
       quarantinedAvatars.add(avatar);
       return {
         ok: false,
@@ -1149,7 +1500,88 @@ export async function mutateCard(owner, command, expectedSnapshot, dependencies)
       recoverable: false,
       details: { httpStatus },
     };
+  } catch (_err) {
+    if (opPhase === OP_PHASE.PRE_DISPATCH) {
+      return {
+        ok: false,
+        code: 'WRITE_REJECTED',
+        message: 'Unexpected error before write dispatch',
+        recoverable: false,
+        details: { reason: 'PRE_DISPATCH_FAILED' },
+      };
+    }
+
+    if (avatar) {
+      quarantinedAvatars.add(avatar);
+    }
+
+    // Post-dispatch exception: bounded readback if not yet attempted
+    if (!readbackAttempted && avatar && typeof dependencies === 'object' && dependencies !== null) {
+      try {
+        readbackAttempted = true;
+        const readCardFn = dependencies.readCard || defaultReadCard;
+        const fetchFn = dependencies.fetch || globalThis.fetch;
+        const verifyTimeoutMs =
+          typeof dependencies.verifyTimeoutMs === 'number' && Number.isSafeInteger(dependencies.verifyTimeoutMs)
+            ? dependencies.verifyTimeoutMs
+            : DEFAULT_VERIFY_TIMEOUT_MS;
+        const verifyController = new AbortController();
+        let verifyTimer = null;
+        try {
+          const verifyDeadlinePromise = new Promise((_, reject) => {
+            verifyTimer = setTimeout(() => {
+              verifyController.abort();
+              const e = new Error('Verification deadline exceeded');
+              e.name = 'TimeoutError';
+              reject(e);
+            }, verifyTimeoutMs);
+          });
+          const rawReadPromise = readCardFn(owner, {
+            getRequestHeaders: dependencies.getRequestHeaders,
+            fetch: fetchFn,
+            signal: verifyController.signal,
+          });
+          rawReadPromise.catch(() => {});
+          const rb = await Promise.race([rawReadPromise, verifyDeadlinePromise]);
+          if (rb && preRead && planResult) {
+            const insp = inspectReadback(rb, false, preRead, planResult);
+            if (!insp.inspectionFailed && insp.readbackMatchesNext) {
+              return {
+                ok: false,
+                code: 'WRITE_UNCERTAIN',
+                message: 'POST completion was unknown but planned registry was observed on disk',
+                recoverable: false,
+                details: {
+                  persistedObserved: true,
+                  ...(normalizedStatus !== null ? { httpStatus: normalizedStatus } : { postOutcome: 'UNKNOWN' }),
+                },
+              };
+            }
+          }
+        } finally {
+          if (verifyTimer !== null) {
+            clearTimeout(verifyTimer);
+          }
+        }
+      } catch (_rbErr) {
+        // readback failed
+      }
+    }
+
+    return {
+      ok: false,
+      code: 'WRITE_UNCERTAIN',
+      message: 'Write failed unexpectedly and persistence is uncertain',
+      recoverable: false,
+      details: normalizedStatus !== null ? { httpStatus: normalizedStatus } : { postOutcome: 'UNKNOWN' },
+    };
   } finally {
-    releaseQueue();
+    if (releaseQueue) {
+      try {
+        releaseQueue();
+      } catch (_cleanupErr) {
+        // preserve cleanup safety
+      }
+    }
   }
 }
