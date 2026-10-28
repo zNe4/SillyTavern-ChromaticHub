@@ -1,5 +1,5 @@
 /**
- * SillyTavern-ChromaticHub: Guarded Mutation Controller Tests (H01-B2-I / H01-B2-R1)
+ * SillyTavern-ChromaticHub: Guarded Mutation Controller Tests (H01-B2-I / H01-B2-R1 / H01-B2-R2)
  *
  * Synthetic unit tests covering:
  * - Parameter and mandatory context validation
@@ -13,6 +13,7 @@
  * - Three-way decision table coverage
  * - Immutability, privacy, and memory safety
  * - H01-B2-R1: Hard deadlines, malformed responses, diagnostic privacy
+ * - H01-B2-R2: Fail-closed dependency boundaries & response normalization
  */
 
 import test from 'node:test';
@@ -1657,4 +1658,518 @@ test('mutateCard - H01-B2-R1 Regression Suite (Deadlines, Malformed Responses, P
     assert.equal(res.ok, false);
     assert.equal(mergeCalls, 1, 'Exactly one POST must be attempted, zero retries');
   });
+});
+
+test('mutateCard - H01-B2-R2 Regression Suite (Fail-Closed Boundaries)', async (t) => {
+  await t.test('POST response whose status getter throws', async () => {
+    const avatar = uniqueAvatar('R2_StatusGetterThrow');
+    const owner = { kind: 'installed-card', avatar };
+    const secretErr = 'STATUS_GETTER_SECRET_111';
+    let getCalls = 0;
+    const mockFetch = createMockFetch({
+      '/api/characters/get': () => {
+        getCalls++;
+        return {
+          ok: true,
+          status: 200,
+          json: async () => createMockCard(avatar, undefined),
+        };
+      },
+      '/api/characters/merge-attributes': () => ({
+        get status() {
+          throw new Error(`Explosion ${secretErr}`);
+        },
+        ok: true,
+        json: async () => ({}),
+      }),
+    });
+
+    const deps = createValidDependencies({ avatar, fetch: mockFetch });
+    const res = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'TrapChar' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+
+    assert.equal(res.ok, false);
+    assert.equal(res.code, 'WRITE_UNCERTAIN');
+    assert.equal(res.recoverable, false);
+    assert.equal(res.details?.postOutcome, 'UNKNOWN');
+    const serialized = JSON.stringify(res);
+    assert.equal(serialized.includes(secretErr), false, 'Must not leak exception secret');
+    assert.equal(getCalls, 2, 'Must perform independent persistence verification readback');
+  });
+
+  await t.test('Second mutation after status getter throw failure is blocked by CARD_QUARANTINED', async () => {
+    const avatar = uniqueAvatar('R2_QuarantineBlock');
+    const owner = { kind: 'installed-card', avatar };
+    const mockFetch = createMockFetch({
+      '/api/characters/get': () => ({
+        ok: true,
+        status: 200,
+        json: async () => createMockCard(avatar, undefined),
+      }),
+      '/api/characters/merge-attributes': () => ({
+        get status() {
+          throw new Error('STATUS_EXPLODE');
+        },
+        ok: true,
+        json: async () => ({}),
+      }),
+    });
+
+    const deps = createValidDependencies({ avatar, fetch: mockFetch });
+    const res1 = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'FirstFail' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+    assert.equal(res1.ok, false);
+    assert.equal(res1.code, 'WRITE_UNCERTAIN');
+
+    // Second mutation attempt on the same avatar
+    let secondFetchCalls = 0;
+    const mockFetch2 = () => {
+      secondFetchCalls++;
+      return {};
+    };
+    const deps2 = createValidDependencies({ avatar, fetch: mockFetch2 });
+    const res2 = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'BlockedSecond' } },
+      { status: 'UNINITIALIZED' },
+      deps2
+    );
+
+    assert.equal(res2.ok, false);
+    assert.equal(res2.code, 'CARD_QUARANTINED');
+    assert.equal(res2.recoverable, false);
+    assert.equal(res2.details?.avatar, avatar);
+    assert.equal(secondFetchCalls, 0, 'Blocked immediately without network requests');
+  });
+
+  await t.test('POST response with status: NaN', async () => {
+    const avatar = uniqueAvatar('R2_StatusNaN');
+    const owner = { kind: 'installed-card', avatar };
+    const mockFetch = createMockFetch({
+      '/api/characters/get': () => ({
+        ok: true,
+        status: 200,
+        json: async () => createMockCard(avatar, undefined),
+      }),
+      '/api/characters/merge-attributes': () => ({
+        status: NaN,
+        ok: false,
+        json: async () => ({}),
+      }),
+    });
+
+    const deps = createValidDependencies({ avatar, fetch: mockFetch });
+    const res = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'NaNChar' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+
+    assert.equal(res.ok, false);
+    assert.equal(res.code, 'WRITE_UNCERTAIN');
+    assert.equal(res.recoverable, false);
+    assert.equal(res.details?.postOutcome, 'UNKNOWN');
+
+    // Verify avatar quarantined
+    const resBlocked = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'Blocked' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+    assert.equal(resBlocked.code, 'CARD_QUARANTINED');
+  });
+
+  await t.test('POST response with fractional status', async () => {
+    const avatar = uniqueAvatar('R2_StatusFractional');
+    const owner = { kind: 'installed-card', avatar };
+    const mockFetch = createMockFetch({
+      '/api/characters/get': () => ({
+        ok: true,
+        status: 200,
+        json: async () => createMockCard(avatar, undefined),
+      }),
+      '/api/characters/merge-attributes': () => ({
+        status: 200.5,
+        ok: true,
+        json: async () => ({}),
+      }),
+    });
+
+    const deps = createValidDependencies({ avatar, fetch: mockFetch });
+    const res = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'FractionalChar' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+
+    assert.equal(res.ok, false);
+    assert.equal(res.code, 'WRITE_UNCERTAIN');
+    assert.equal(res.recoverable, false);
+    assert.equal(res.details?.postOutcome, 'UNKNOWN');
+
+    // Verify quarantined
+    const resBlocked = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'Blocked' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+    assert.equal(resBlocked.code, 'CARD_QUARANTINED');
+  });
+
+  await t.test('POST response with status: 200, ok: false', async () => {
+    const avatar = uniqueAvatar('R2_Status200OkFalse');
+    const owner = { kind: 'installed-card', avatar };
+    const mockFetch = createMockFetch({
+      '/api/characters/get': () => ({
+        ok: true,
+        status: 200,
+        json: async () => createMockCard(avatar, undefined),
+      }),
+      '/api/characters/merge-attributes': () => ({
+        status: 200,
+        ok: false,
+        json: async () => ({}),
+      }),
+    });
+
+    const deps = createValidDependencies({ avatar, fetch: mockFetch });
+    const res = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'InconsistentOk' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+
+    assert.equal(res.ok, false);
+    assert.equal(res.code, 'WRITE_UNCERTAIN');
+    assert.equal(res.recoverable, false);
+    assert.equal(res.details?.postOutcome, 'UNKNOWN');
+
+    // Verify quarantined
+    const resBlocked = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'Blocked' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+    assert.equal(resBlocked.code, 'CARD_QUARANTINED');
+  });
+
+  await t.test('POST response with a missing or invalid ok property', async () => {
+    const invalidCases = [
+      { name: 'missing ok', resp: { status: 200 } },
+      { name: 'string ok', resp: { status: 200, ok: 'true' } },
+      { name: 'null ok', resp: { status: 200, ok: null } },
+      { name: '500 with ok: true', resp: { status: 500, ok: true } },
+      {
+        name: 'throwing ok getter',
+        resp: {
+          status: 200,
+          get ok() {
+            throw new Error('OK_TRAP');
+          },
+        },
+      },
+    ];
+
+    for (const testCase of invalidCases) {
+      const avatar = uniqueAvatar('R2_InvalidOk');
+      const owner = { kind: 'installed-card', avatar };
+      const mockFetch = createMockFetch({
+        '/api/characters/get': () => ({
+          ok: true,
+          status: 200,
+          json: async () => createMockCard(avatar, undefined),
+        }),
+        '/api/characters/merge-attributes': () => ({
+          ...testCase.resp,
+          json: async () => ({}),
+        }),
+      });
+
+      const deps = createValidDependencies({ avatar, fetch: mockFetch });
+      const res = await mutateCard(
+        owner,
+        { type: 'add', character: { name: 'TestOk' } },
+        { status: 'UNINITIALIZED' },
+        deps
+      );
+
+      assert.equal(res.ok, false, `Failed for case: ${testCase.name}`);
+      assert.equal(res.code, 'WRITE_UNCERTAIN', `Failed for case: ${testCase.name}`);
+      assert.equal(res.recoverable, false);
+      assert.equal(res.details?.postOutcome, 'UNKNOWN');
+
+      // Verify quarantined
+      const resBlocked = await mutateCard(
+        owner,
+        { type: 'add', character: { name: 'Blocked' } },
+        { status: 'UNINITIALIZED' },
+        deps
+      );
+      assert.equal(resBlocked.code, 'CARD_QUARANTINED');
+    }
+  });
+
+  await t.test('Header object containing an enumerable getter that throws', async () => {
+    const avatar = uniqueAvatar('R2_HeaderGetterThrow');
+    const owner = { kind: 'installed-card', avatar };
+    const secretToken = 'SECRET_HEADER_PROP_GETTER_999';
+    let mergeCalls = 0;
+    const mockFetch = createMockFetch({
+      '/api/characters/get': () => ({
+        ok: true,
+        status: 200,
+        json: async () => createMockCard(avatar, undefined),
+      }),
+      '/api/characters/merge-attributes': () => {
+        mergeCalls++;
+        return { ok: true, status: 200, json: async () => ({}) };
+      },
+    });
+
+    let headerCalls = 0;
+    const deps = createValidDependencies({
+      avatar,
+      fetch: mockFetch,
+      getRequestHeaders: () => {
+        headerCalls++;
+        if (headerCalls === 1) {
+          // pre-read call
+          return { 'X-CSRF-Token': 'ok-token' };
+        }
+        // pre-dispatch call: return object with throwing enumerable getter
+        const headersObj = {};
+        Object.defineProperty(headersObj, 'X-Trap-Header', {
+          enumerable: true,
+          get() {
+            throw new Error(`Trap secret: ${secretToken}`);
+          },
+        });
+        return headersObj;
+      },
+    });
+
+    const res = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'HeaderTrap' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+
+    assert.equal(res.ok, false);
+    assert.equal(res.code, 'WRITE_REJECTED');
+    assert.equal(res.details?.reason, 'INVALID_HEADERS');
+    assert.equal(mergeCalls, 0, 'Zero POST calls must be attempted');
+    const serialized = JSON.stringify(res);
+    assert.equal(serialized.includes(secretToken), false, 'Must not leak secret from header getter');
+
+    // Confirm avatar is NOT quarantined since failure occurred before POST dispatch
+    const cleanDeps = createValidDependencies({
+      avatar,
+      fetch: createMockFetch({
+        '/api/characters/get': () => ({
+          ok: true,
+          status: 200,
+          json: async () => createMockCard(avatar, undefined),
+        }),
+      }),
+    });
+    const preflightRes = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'CleanCheck' } },
+      { status: 'VALID' },
+      cleanDeps
+    );
+    assert.notEqual(preflightRes.code, 'CARD_QUARANTINED', 'Avatar must not be quarantined');
+  });
+
+  await t.test('Context object containing a property getter that throws', async () => {
+    // 8a. expectedContext property getter throws
+    const avatarA = uniqueAvatar('R2_ExpCtxGetter');
+    const ownerA = { kind: 'installed-card', avatar: avatarA };
+    const secretA = 'SECRET_EXP_CTX_TRAP_111';
+    let mergeCallsA = 0;
+    const mockFetchA = createMockFetch({
+      '/api/characters/merge-attributes': () => {
+        mergeCallsA++;
+        return { ok: true, status: 200, json: async () => ({}) };
+      },
+    });
+
+    const throwingExpContext = {
+      avatar: avatarA,
+      get groupId() {
+        throw new Error(`Trap secret: ${secretA}`);
+      },
+    };
+
+    const depsA = createValidDependencies({
+      avatar: avatarA,
+      fetch: mockFetchA,
+      expectedContext: throwingExpContext,
+    });
+
+    const resA = await mutateCard(
+      ownerA,
+      { type: 'add', character: { name: 'ExpCtxTrap' } },
+      { status: 'UNINITIALIZED' },
+      depsA
+    );
+
+    assert.equal(resA.ok, false);
+    assert.equal(resA.code, 'STALE_CARD_LOCATOR');
+    assert.equal(resA.details?.reason, 'CONTEXT_EVALUATION_FAILED');
+    assert.equal(mergeCallsA, 0, 'Zero POST calls made');
+    assert.equal(JSON.stringify(resA).includes(secretA), false);
+
+    // 8b. getContext() returned object property getter throws
+    const avatarB = uniqueAvatar('R2_LiveCtxGetter');
+    const ownerB = { kind: 'installed-card', avatar: avatarB };
+    const secretB = 'SECRET_LIVE_CTX_TRAP_222';
+    let mergeCallsB = 0;
+    const mockFetchB = createMockFetch({
+      '/api/characters/merge-attributes': () => {
+        mergeCallsB++;
+        return { ok: true, status: 200, json: async () => ({}) };
+      },
+    });
+
+    const depsB = createValidDependencies({
+      avatar: avatarB,
+      fetch: mockFetchB,
+      getContext: () => ({
+        avatar: avatarB,
+        get groupId() {
+          throw new Error(`Trap secret: ${secretB}`);
+        },
+      }),
+    });
+
+    const resB = await mutateCard(
+      ownerB,
+      { type: 'add', character: { name: 'LiveCtxTrap' } },
+      { status: 'UNINITIALIZED' },
+      depsB
+    );
+
+    assert.equal(resB.ok, false);
+    assert.equal(resB.code, 'STALE_CARD_LOCATOR');
+    assert.equal(resB.details?.reason, 'CONTEXT_EVALUATION_FAILED');
+    assert.equal(mergeCallsB, 0, 'Zero POST calls made');
+    assert.equal(JSON.stringify(resB).includes(secretB), false);
+  });
+
+  await t.test('Above-maximum timeout values rejected without network requests', async () => {
+    const avatar = uniqueAvatar('R2_MaxTimeouts');
+    const owner = { kind: 'installed-card', avatar };
+    let callsCount = 0;
+    const mockFetch = () => {
+      callsCount++;
+      return {};
+    };
+
+    const invalidCases = [
+      { postTimeoutMs: 60001 },
+      { postTimeoutMs: 100000 },
+      { postTimeoutMs: Infinity },
+      { verifyTimeoutMs: 30001 },
+      { verifyTimeoutMs: 50000 },
+      { verifyTimeoutMs: Infinity },
+    ];
+
+    for (const badOption of invalidCases) {
+      const deps = createValidDependencies({
+        avatar,
+        fetch: mockFetch,
+        ...badOption,
+      });
+      const res = await mutateCard(
+        owner,
+        { type: 'add', character: { name: 'BadTimeout' } },
+        { status: 'UNINITIALIZED' },
+        deps
+      );
+      assert.equal(res.ok, false);
+      assert.equal(res.code, 'INVALID_OPTIONS');
+    }
+    assert.equal(callsCount, 0, 'Zero network calls must be made on above-maximum timeout values');
+  });
+
+  await t.test(
+    'Normal native-compatible { status: 200, ok: true } remains accepted when independent readback matches',
+    async () => {
+      const avatar = uniqueAvatar('R2_NormalSuccess');
+      const owner = { kind: 'installed-card', avatar };
+      let postBody = null;
+      let persistedRegistry = null;
+
+      const mockFetch = createMockFetch({
+        '/api/characters/get': () => {
+          if (!persistedRegistry) {
+            // Pre-read: uninitialized
+            return {
+              ok: true,
+              status: 200,
+              json: async () => createMockCard(avatar, undefined),
+            };
+          }
+          // Verification readback: card with updated registry from POST
+          return {
+            ok: true,
+            status: 200,
+            json: async () => createMockCard(avatar, persistedRegistry),
+          };
+        },
+        '/api/characters/merge-attributes': (_url, options) => {
+          postBody = JSON.parse(options.body);
+          persistedRegistry = postBody.data.extensions.chromaticHub;
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ ok: true }),
+          };
+        },
+      });
+
+      const deps = createValidDependencies({ avatar, fetch: mockFetch });
+      const res = await mutateCard(
+        owner,
+        { type: 'add', character: { name: 'StandardChar' } },
+        { status: 'UNINITIALIZED' },
+        deps
+      );
+
+      assert.equal(res.ok, true);
+      assert.equal(res.status, 'VALID');
+      assert.equal(res.value.revision, 1);
+      assert.equal(res.value.characters.length, 1);
+      assert.equal(res.value.characters[0].name, 'StandardChar');
+      assert.ok(postBody);
+      assert.equal(postBody.avatar, avatar);
+      assert.equal(postBody.data.extensions.chromaticHub.revision, 1);
+
+      // Verify avatar is NOT quarantined
+      const cleanDeps = createValidDependencies({ avatar, fetch: mockFetch });
+      const checkRes = await mutateCard(
+        owner,
+        { type: 'add', character: { name: 'Another' } },
+        { status: 'UNINITIALIZED' },
+        cleanDeps
+      );
+      assert.notEqual(checkRes.code, 'CARD_QUARANTINED', 'Avatar must not be quarantined after success');
+    }
+  );
 });

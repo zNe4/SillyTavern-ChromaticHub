@@ -1,18 +1,20 @@
 /**
- * SillyTavern-ChromaticHub: Guarded Single-Card Mutation Controller (H01-B2-R1)
+ * SillyTavern-ChromaticHub: Guarded Single-Card Mutation Controller (H01-B2-R2)
  *
  * Implements guarded, single-card mutation of data.extensions.chromaticHub.
  * Reuses pure core identity contracts and read-only SillyTavern adapter.
  *
  * Enforces hard network deadlines, quarantine on uncertainty, diagnostic privacy,
- * and comprehensive resource cleanup.
+ * fail-closed dependency boundaries, and comprehensive resource cleanup.
  */
 
 import { planMutation, serializeRegistry } from './identity-registry.mjs';
 import { readCard as defaultReadCard } from './sillytavern-adapter.mjs';
 
 const DEFAULT_POST_TIMEOUT_MS = 10000;
+const MAX_POST_TIMEOUT_MS = 60000;
 const DEFAULT_VERIFY_TIMEOUT_MS = 5000;
+const MAX_VERIFY_TIMEOUT_MS = 30000;
 
 const PNG_EXTENSION_REGEX = /\.[pP][nN][gG]$/;
 const CONTROL_CHARS_REGEX = /[\x00-\x1f\x7f-\x9f]/;
@@ -273,7 +275,19 @@ function validateDependencies(dependencies) {
     };
   }
 
-  const keys = Object.keys(dependencies.expectedContext);
+  let keys;
+  try {
+    keys = Object.keys(dependencies.expectedContext);
+  } catch (_err) {
+    return {
+      ok: false,
+      code: 'STALE_CARD_LOCATOR',
+      message: 'Failed to inspect expectedContext keys',
+      recoverable: false,
+      details: { reason: 'CONTEXT_EVALUATION_FAILED' },
+    };
+  }
+
   if (keys.length === 0) {
     return {
       ok: false,
@@ -283,12 +297,24 @@ function validateDependencies(dependencies) {
     };
   }
 
-  const hasDirectAvatar =
-    typeof dependencies.expectedContext.avatar === 'string' &&
-    dependencies.expectedContext.avatar.trim().length > 0;
-  const hasCharAvatar =
-    Array.isArray(dependencies.expectedContext.characters) &&
-    typeof dependencies.expectedContext.characterId === 'number';
+  let hasDirectAvatar = false;
+  let hasCharAvatar = false;
+  try {
+    hasDirectAvatar =
+      typeof dependencies.expectedContext.avatar === 'string' &&
+      dependencies.expectedContext.avatar.trim().length > 0;
+    hasCharAvatar =
+      Array.isArray(dependencies.expectedContext.characters) &&
+      typeof dependencies.expectedContext.characterId === 'number';
+  } catch (_err) {
+    return {
+      ok: false,
+      code: 'STALE_CARD_LOCATOR',
+      message: 'Failed to evaluate context properties',
+      recoverable: false,
+      details: { reason: 'CONTEXT_EVALUATION_FAILED' },
+    };
+  }
   if (!hasDirectAvatar && !hasCharAvatar) {
     return {
       ok: false,
@@ -316,16 +342,25 @@ function validateDependencies(dependencies) {
     };
   }
 
-  if (
-    dependencies.signal !== undefined &&
-    (dependencies.signal === null ||
-      typeof dependencies.signal !== 'object' ||
-      typeof dependencies.signal.aborted !== 'boolean')
-  ) {
+  try {
+    if (
+      dependencies.signal !== undefined &&
+      (dependencies.signal === null ||
+        typeof dependencies.signal !== 'object' ||
+        typeof dependencies.signal.aborted !== 'boolean')
+    ) {
+      return {
+        ok: false,
+        code: 'INVALID_OPTIONS',
+        message: 'dependencies.signal must be an AbortSignal instance',
+        recoverable: false,
+      };
+    }
+  } catch (_err) {
     return {
       ok: false,
       code: 'INVALID_OPTIONS',
-      message: 'dependencies.signal must be an AbortSignal instance',
+      message: 'dependencies.signal property evaluation threw',
       recoverable: false,
     };
   }
@@ -334,12 +369,13 @@ function validateDependencies(dependencies) {
     if (
       typeof dependencies.postTimeoutMs !== 'number' ||
       !Number.isSafeInteger(dependencies.postTimeoutMs) ||
-      dependencies.postTimeoutMs <= 0
+      dependencies.postTimeoutMs <= 0 ||
+      dependencies.postTimeoutMs > MAX_POST_TIMEOUT_MS
     ) {
       return {
         ok: false,
         code: 'INVALID_OPTIONS',
-        message: 'postTimeoutMs must be a positive safe integer',
+        message: `postTimeoutMs must be a positive safe integer <= ${MAX_POST_TIMEOUT_MS}`,
         recoverable: false,
       };
     }
@@ -349,12 +385,13 @@ function validateDependencies(dependencies) {
     if (
       typeof dependencies.verifyTimeoutMs !== 'number' ||
       !Number.isSafeInteger(dependencies.verifyTimeoutMs) ||
-      dependencies.verifyTimeoutMs <= 0
+      dependencies.verifyTimeoutMs <= 0 ||
+      dependencies.verifyTimeoutMs > MAX_VERIFY_TIMEOUT_MS
     ) {
       return {
         ok: false,
         code: 'INVALID_OPTIONS',
-        message: 'verifyTimeoutMs must be a positive safe integer',
+        message: `verifyTimeoutMs must be a positive safe integer <= ${MAX_VERIFY_TIMEOUT_MS}`,
         recoverable: false,
       };
     }
@@ -380,28 +417,91 @@ function resolveContextAvatar(ctx) {
 }
 
 function evaluateContext(owner, expectedContext, getContext) {
-  if (expectedContext.groupId) {
-    return {
-      ok: false,
-      code: 'UNSUPPORTED_CONTEXT',
-      message: 'Group chat card mutations are unsupported',
-      recoverable: false,
-    };
-  }
-
-  const expectedAvatar = resolveContextAvatar(expectedContext);
-  if (!expectedAvatar || expectedAvatar !== owner.avatar) {
-    return {
-      ok: false,
-      code: 'STALE_CARD_LOCATOR',
-      message: `Expected context avatar (${expectedAvatar ?? 'none'}) does not match target owner avatar (${owner.avatar})`,
-      recoverable: false,
-    };
-  }
-
-  let liveCtx;
   try {
-    liveCtx = getContext();
+    if (expectedContext.groupId) {
+      return {
+        ok: false,
+        code: 'UNSUPPORTED_CONTEXT',
+        message: 'Group chat card mutations are unsupported',
+        recoverable: false,
+      };
+    }
+
+    const expectedAvatar = resolveContextAvatar(expectedContext);
+    if (!expectedAvatar || expectedAvatar !== owner.avatar) {
+      return {
+        ok: false,
+        code: 'STALE_CARD_LOCATOR',
+        message: `Expected context avatar (${expectedAvatar ?? 'none'}) does not match target owner avatar (${owner.avatar})`,
+        recoverable: false,
+      };
+    }
+
+    let liveCtx;
+    try {
+      liveCtx = getContext();
+    } catch (_err) {
+      return {
+        ok: false,
+        code: 'STALE_CARD_LOCATOR',
+        message: 'Context evaluation threw an exception',
+        recoverable: false,
+        details: { reason: 'CONTEXT_EVALUATION_FAILED' },
+      };
+    }
+
+    if (!liveCtx || typeof liveCtx !== 'object') {
+      return {
+        ok: false,
+        code: 'STALE_CARD_LOCATOR',
+        message: 'getContext returned null or non-object',
+        recoverable: false,
+        details: { reason: 'INVALID_CONTEXT_OBJECT' },
+      };
+    }
+
+    if (liveCtx.groupId) {
+      return {
+        ok: false,
+        code: 'UNSUPPORTED_CONTEXT',
+        message: 'Group chat card mutations are unsupported',
+        recoverable: false,
+      };
+    }
+
+    const liveAvatar = resolveContextAvatar(liveCtx);
+    if (!liveAvatar || liveAvatar !== owner.avatar) {
+      return {
+        ok: false,
+        code: 'STALE_CARD_LOCATOR',
+        message: `Live context avatar (${liveAvatar ?? 'none'}) does not match target owner avatar (${owner.avatar})`,
+        recoverable: false,
+      };
+    }
+
+    if (expectedContext.characterId !== undefined && liveCtx.characterId !== expectedContext.characterId) {
+      return {
+        ok: false,
+        code: 'STALE_CARD_LOCATOR',
+        message: 'Live context characterId does not match expected context',
+        recoverable: false,
+      };
+    }
+
+    if (
+      expectedContext.chatId !== undefined &&
+      expectedContext.chatId !== null &&
+      liveCtx.chatId !== expectedContext.chatId
+    ) {
+      return {
+        ok: false,
+        code: 'STALE_CARD_LOCATOR',
+        message: 'Live context chatId does not match expected context',
+        recoverable: false,
+      };
+    }
+
+    return { ok: true, context: liveCtx };
   } catch (_err) {
     return {
       ok: false,
@@ -411,59 +511,6 @@ function evaluateContext(owner, expectedContext, getContext) {
       details: { reason: 'CONTEXT_EVALUATION_FAILED' },
     };
   }
-
-  if (!liveCtx || typeof liveCtx !== 'object') {
-    return {
-      ok: false,
-      code: 'STALE_CARD_LOCATOR',
-      message: 'getContext returned null or non-object',
-      recoverable: false,
-      details: { reason: 'INVALID_CONTEXT_OBJECT' },
-    };
-  }
-
-  if (liveCtx.groupId) {
-    return {
-      ok: false,
-      code: 'UNSUPPORTED_CONTEXT',
-      message: 'Group chat card mutations are unsupported',
-      recoverable: false,
-    };
-  }
-
-  const liveAvatar = resolveContextAvatar(liveCtx);
-  if (!liveAvatar || liveAvatar !== owner.avatar) {
-    return {
-      ok: false,
-      code: 'STALE_CARD_LOCATOR',
-      message: `Live context avatar (${liveAvatar ?? 'none'}) does not match target owner avatar (${owner.avatar})`,
-      recoverable: false,
-    };
-  }
-
-  if (expectedContext.characterId !== undefined && liveCtx.characterId !== expectedContext.characterId) {
-    return {
-      ok: false,
-      code: 'STALE_CARD_LOCATOR',
-      message: 'Live context characterId does not match expected context',
-      recoverable: false,
-    };
-  }
-
-  if (
-    expectedContext.chatId !== undefined &&
-    expectedContext.chatId !== null &&
-    liveCtx.chatId !== expectedContext.chatId
-  ) {
-    return {
-      ok: false,
-      code: 'STALE_CARD_LOCATOR',
-      message: 'Live context chatId does not match expected context',
-      recoverable: false,
-    };
-  }
-
-  return { ok: true, context: liveCtx };
 }
 
 function evaluateEditorSafety(owner, checkEditorSafety) {
@@ -480,13 +527,23 @@ function evaluateEditorSafety(owner, checkEditorSafety) {
     };
   }
 
-  if (!result || typeof result !== 'object' || result.safe !== true) {
+  try {
+    if (!result || typeof result !== 'object' || result.safe !== true) {
+      return {
+        ok: false,
+        code: 'WRITE_REJECTED',
+        message: 'Editor safety cannot be established',
+        recoverable: false,
+        details: { reason: 'EDITOR_UNSAFE' },
+      };
+    }
+  } catch (_err) {
     return {
       ok: false,
       code: 'WRITE_REJECTED',
-      message: 'Editor safety cannot be established',
+      message: 'Editor safety check failed with an exception',
       recoverable: false,
-      details: { reason: 'EDITOR_UNSAFE' },
+      details: { reason: 'EDITOR_CHECK_THREW' },
     };
   }
 
@@ -494,7 +551,19 @@ function evaluateEditorSafety(owner, checkEditorSafety) {
 }
 
 async function acquireQueueLock(avatar, userSignal) {
-  if (userSignal?.aborted) {
+  let isAborted = false;
+  try {
+    isAborted = Boolean(userSignal?.aborted);
+  } catch (_err) {
+    return {
+      ok: false,
+      code: 'OPERATION_CANCELLED',
+      message: 'Operation cancelled',
+      recoverable: false,
+    };
+  }
+
+  if (isAborted) {
     return {
       ok: false,
       code: 'OPERATION_CANCELLED',
@@ -785,19 +854,43 @@ export async function mutateCard(owner, command, expectedSnapshot, dependencies)
       };
     }
 
-    const headers = {
-      ...rawHeaders,
-      'Content-Type': 'application/json',
-    };
+    let headers;
+    try {
+      headers = {
+        ...rawHeaders,
+        'Content-Type': 'application/json',
+      };
+    } catch (_err) {
+      return {
+        ok: false,
+        code: 'WRITE_REJECTED',
+        message: 'Failed to construct request headers',
+        recoverable: false,
+        details: { reason: 'INVALID_HEADERS' },
+      };
+    }
 
-    const payload = {
-      avatar,
-      data: {
-        extensions: {
-          chromaticHub: planResult.value,
+    let payload;
+    let body;
+    try {
+      payload = {
+        avatar,
+        data: {
+          extensions: {
+            chromaticHub: planResult.value,
+          },
         },
-      },
-    };
+      };
+      body = JSON.stringify(payload);
+    } catch (_err) {
+      return {
+        ok: false,
+        code: 'WRITE_REJECTED',
+        message: 'Failed to serialize mutation payload',
+        recoverable: false,
+        details: { reason: 'PAYLOAD_SERIALIZATION_FAILED' },
+      };
+    }
 
     // 17. Hard-Bounded POST Dispatch
     const postTimeoutMs = dependencies.postTimeoutMs ?? DEFAULT_POST_TIMEOUT_MS;
@@ -830,7 +923,7 @@ export async function mutateCard(owner, command, expectedSnapshot, dependencies)
       const rawPostPromise = fetchFn('/api/characters/merge-attributes', {
         method: 'POST',
         headers,
-        body: JSON.stringify(payload),
+        body,
         signal: postController.signal,
       });
 
@@ -851,14 +944,33 @@ export async function mutateCard(owner, command, expectedSnapshot, dependencies)
       }
     }
 
-    // Validate POST Response structure when completed
-    if (postOutcome === 'COMPLETED') {
-      const isValidResponse =
-        postResponse &&
-        typeof postResponse === 'object' &&
-        typeof postResponse.status === 'number';
+    // Guarded POST response normalization
+    let normalizedStatus = null;
+    let isNormalizedOk = false;
 
-      if (!isValidResponse) {
+    if (postOutcome === 'COMPLETED') {
+      try {
+        if (!postResponse || typeof postResponse !== 'object') {
+          postOutcome = 'UNKNOWN';
+        } else {
+          const rawStatus = postResponse.status;
+          const rawOk = postResponse.ok;
+
+          if (
+            typeof rawStatus === 'number' &&
+            Number.isInteger(rawStatus) &&
+            rawStatus >= 100 &&
+            rawStatus <= 599 &&
+            typeof rawOk === 'boolean' &&
+            rawOk === (rawStatus >= 200 && rawStatus <= 299)
+          ) {
+            normalizedStatus = rawStatus;
+            isNormalizedOk = rawOk;
+          } else {
+            postOutcome = 'UNKNOWN';
+          }
+        }
+      } catch (_err) {
         postOutcome = 'UNKNOWN';
       }
     }
@@ -954,8 +1066,8 @@ export async function mutateCard(owner, command, expectedSnapshot, dependencies)
       };
     }
 
-    // Category B: POST completed with an HTTP response
-    if (postResponse.status === 200) {
+    // Category B: POST completed with a valid HTTP response
+    if (normalizedStatus === 200) {
       if (readbackMatchesNext) {
         const postVerifyCtx = evaluateContext(owner, dependencies.expectedContext, dependencies.getContext);
         if (!postVerifyCtx.ok) {
@@ -1007,7 +1119,7 @@ export async function mutateCard(owner, command, expectedSnapshot, dependencies)
     }
 
     // Completed with HTTP rejection (4xx / 5xx)
-    const httpStatus = postResponse.status;
+    const httpStatus = normalizedStatus;
     if (readbackMatchesOld) {
       return {
         ok: false,
