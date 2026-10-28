@@ -15,12 +15,18 @@
  * - H01-B2-R1: Hard deadlines, malformed responses, diagnostic privacy
  * - H01-B2-R2: Fail-closed dependency boundaries & response normalization
  * - H01-B2-R3: Post-dispatch exception containment & fail-closed inspection
+ * - H01-B2-F1: Bounded, cancellable preliminary read (deadline race, queue liveness)
  */
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { getEventListeners } from 'node:events';
 
 import { mutateCard } from '../src/card-mutation-controller.mjs';
+
+function countSignalEvents(signal) {
+  return getEventListeners(signal, 'abort').length;
+}
 
 let avatarCounter = 0;
 function uniqueAvatar(prefix = 'TestCard') {
@@ -2774,4 +2780,716 @@ test('mutateCard - Post-Dispatch Exception Containment & Invariant Boundary (H01
       assert.equal(retryRes.code, 'CARD_QUARANTINED');
     }
   );
+});
+
+test('mutateCard - H01-B2-F1 Bounded Preliminary Read', async (t) => {
+  await t.test('permanently hanging reader ignoring abort -> READ_FAILED PRE_READ_TIMEOUT', async () => {
+    const avatar = uniqueAvatar('F1_HangingPreRead');
+    const owner = { kind: 'installed-card', avatar };
+    let mergeCalls = 0;
+    const mockFetch = createMockFetch({
+      '/api/characters/merge-attributes': () => {
+        mergeCalls++;
+        return { ok: true, status: 200, json: async () => ({}) };
+      },
+    });
+    const deps = createValidDependencies({
+      avatar,
+      fetch: mockFetch,
+      readCard: () => new Promise(() => {}),
+      preReadTimeoutMs: 30,
+    });
+
+    const res = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'NeverSettles' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+
+    assert.equal(res.ok, false);
+    assert.equal(res.code, 'READ_FAILED');
+    assert.equal(res.recoverable, false);
+    assert.equal(res.details?.reason, 'PRE_READ_TIMEOUT');
+    assert.equal(mergeCalls, 0, 'Zero POSTs after pre-read deadline');
+  });
+
+  await t.test('reader rejecting before the deadline -> READ_FAILED PRE_READ_THROWN', async () => {
+    const avatar = uniqueAvatar('F1_RejectingPreRead');
+    const owner = { kind: 'installed-card', avatar };
+    let mergeCalls = 0;
+    const mockFetch = createMockFetch({
+      '/api/characters/merge-attributes': () => {
+        mergeCalls++;
+        return { ok: true, status: 200, json: async () => ({}) };
+      },
+    });
+    const deps = createValidDependencies({
+      avatar,
+      fetch: mockFetch,
+      readCard: async () => {
+        throw new TypeError('Network failure');
+      },
+      preReadTimeoutMs: 5000,
+    });
+
+    const res = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'Rejects' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+
+    assert.equal(res.ok, false);
+    assert.equal(res.code, 'READ_FAILED');
+    assert.equal(res.recoverable, false);
+    assert.equal(res.details?.reason, 'PRE_READ_THROWN');
+    assert.equal(mergeCalls, 0);
+  });
+
+  await t.test('reader throwing synchronously -> READ_FAILED PRE_READ_THROWN', async () => {
+    const avatar = uniqueAvatar('F1_SyncThrowPreRead');
+    const owner = { kind: 'installed-card', avatar };
+    const secret = 'SECRET_SYNC_THROW_PRE_READ_123';
+    let mergeCalls = 0;
+    const mockFetch = createMockFetch({
+      '/api/characters/merge-attributes': () => {
+        mergeCalls++;
+        return { ok: true, status: 200, json: async () => ({}) };
+      },
+    });
+    const deps = createValidDependencies({
+      avatar,
+      fetch: mockFetch,
+      readCard: () => {
+        throw new Error(`Explosion ${secret}`);
+      },
+      preReadTimeoutMs: 5000,
+    });
+
+    const res = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'SyncThrow' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+
+    assert.equal(res.ok, false);
+    assert.equal(res.code, 'READ_FAILED');
+    assert.equal(res.details?.reason, 'PRE_READ_THROWN');
+    assert.equal(mergeCalls, 0);
+    assert.equal(JSON.stringify(res).includes(secret), false, 'Must not leak reader exception details');
+  });
+
+  await t.test('reader settling an ordinary { ok: false } result preserves it unchanged', async () => {
+    const avatar = uniqueAvatar('F1_OkFalsePreRead');
+    const owner = { kind: 'installed-card', avatar };
+    let mergeCalls = 0;
+    const mockFetch = createMockFetch({
+      '/api/characters/merge-attributes': () => {
+        mergeCalls++;
+        return { ok: true, status: 200, json: async () => ({}) };
+      },
+    });
+    const ordinaryFailure = {
+      ok: false,
+      code: 'CARD_NOT_FOUND',
+      message: 'Card not on server',
+      recoverable: false,
+      details: { status: 404, avatar },
+    };
+    const deps = createValidDependencies({
+      avatar,
+      fetch: mockFetch,
+      readCard: async () => ({ ...ordinaryFailure }),
+      preReadTimeoutMs: 5000,
+    });
+
+    const res = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'Missing' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+
+    assert.equal(res.ok, false);
+    assert.equal(res.code, 'CARD_NOT_FOUND');
+    assert.equal(res.recoverable, false);
+    assert.equal(res.details?.status, 404);
+    assert.equal(mergeCalls, 0);
+  });
+
+  await t.test('successful slow reader within the deadline completes the full mutation', async () => {
+    const avatar = uniqueAvatar('F1_SlowReaderOk');
+    const owner = { kind: 'installed-card', avatar };
+    let plannedUuid = null;
+    let readCallCount = 0;
+
+    const mockFetch = createMockFetch([
+      (url, options) => {
+        const body = JSON.parse(options.body);
+        plannedUuid = body.data.extensions.chromaticHub.characters[0].id;
+        return { ok: true, status: 200, json: async () => ({ ok: true }) };
+      },
+    ]);
+
+    const injectedReadCard = async () => {
+      readCallCount++;
+      if (readCallCount === 1) {
+        // Preliminary read: slow but within the deadline
+        await new Promise((r) => setTimeout(r, 20));
+        return { ok: true, status: 'UNINITIALIZED', avatar };
+      }
+      // Verification readback: reflect the persisted registry
+      return {
+        ok: true,
+        status: 'VALID',
+        avatar,
+        value: {
+          schemaVersion: 1,
+          revision: 1,
+          characters: [{ id: plannedUuid, name: 'Patient', descriptor: '', aliases: [] }],
+        },
+      };
+    };
+
+    const deps = createValidDependencies({
+      avatar,
+      fetch: mockFetch,
+      readCard: injectedReadCard,
+      preReadTimeoutMs: 5000,
+    });
+
+    const res = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'Patient' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+
+    assert.equal(res.ok, true);
+    assert.equal(res.status, 'VALID');
+    assert.equal(res.value.revision, 1);
+    assert.equal(res.value.characters[0].name, 'Patient');
+    assert.equal(readCallCount, 2, 'Preliminary read + verification readback');
+    assert.equal(mockFetch.getCallCount(), 1, 'Exactly one POST through fetch');
+  });
+
+  await t.test('caller cancellation while reader ignores abort settles promptly with OPERATION_CANCELLED', async () => {
+    const avatar = uniqueAvatar('F1_CancelDuringPreRead');
+    const owner = { kind: 'installed-card', avatar };
+    const userController = new AbortController();
+    let mergeCalls = 0;
+    const mockFetch = createMockFetch({
+      '/api/characters/merge-attributes': () => {
+        mergeCalls++;
+        return { ok: true, status: 200, json: async () => ({}) };
+      },
+    });
+    const deps = createValidDependencies({
+      avatar,
+      fetch: mockFetch,
+      readCard: () => new Promise(() => {}),
+      signal: userController.signal,
+      preReadTimeoutMs: 30000,
+    });
+
+    const opPromise = mutateCard(
+      owner,
+      { type: 'add', character: { name: 'CancelledMidRead' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+    setTimeout(() => userController.abort(), 15);
+
+    const start = Date.now();
+    const res = await opPromise;
+    const elapsed = Date.now() - start;
+
+    assert.equal(res.ok, false);
+    assert.equal(res.code, 'OPERATION_CANCELLED');
+    assert.equal(res.recoverable, false);
+    assert.equal(mergeCalls, 0, 'Zero POSTs after cancellation');
+    assert.ok(elapsed < 5000, `Cancellation must not wait for the deadline (took ${elapsed}ms)`);
+  });
+
+  await t.test('late reader settlement after the deadline never resumes the operation', async () => {
+    const avatar = uniqueAvatar('F1_LateSettlement');
+    const owner = { kind: 'installed-card', avatar };
+    let mergeCalls = 0;
+    let lateSettled = false;
+    const mockFetch = createMockFetch({
+      '/api/characters/merge-attributes': () => {
+        mergeCalls++;
+        return { ok: true, status: 200, json: async () => ({}) };
+      },
+    });
+    const deps = createValidDependencies({
+      avatar,
+      fetch: mockFetch,
+      readCard: () =>
+        new Promise((resolve) => {
+          setTimeout(() => {
+            lateSettled = true;
+            resolve({ ok: true, status: 'UNINITIALIZED', avatar });
+          }, 80);
+        }),
+      preReadTimeoutMs: 25,
+    });
+
+    const res = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'LateArrival' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+
+    assert.equal(res.ok, false);
+    assert.equal(res.code, 'READ_FAILED');
+    assert.equal(res.details?.reason, 'PRE_READ_TIMEOUT');
+    assert.equal(mergeCalls, 0);
+
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(lateSettled, true, 'Late settlement did occur');
+
+    // A follow-up same-avatar mutation proves the queue was released and no resumption happened
+    let followUpPosts = 0;
+    let plannedUuid;
+    const followUpFetch = createMockFetch([
+      { status: 200, body: createMockCard(avatar, undefined) },
+      (url, options) => {
+        followUpPosts++;
+        const body = JSON.parse(options.body);
+        plannedUuid = body.data.extensions.chromaticHub.characters[0].id;
+        return { ok: true, status: 200, json: async () => ({}) };
+      },
+      () => ({
+        ok: true,
+        status: 200,
+        json: async () =>
+          createMockCard(avatar, {
+            schemaVersion: 1,
+            revision: 1,
+            characters: [{ id: plannedUuid, name: 'FollowUp', descriptor: '', aliases: [] }],
+          }),
+      }),
+    ]);
+    const followUpDeps = createValidDependencies({
+      avatar,
+      fetch: followUpFetch,
+      preReadTimeoutMs: 5000,
+    });
+    const followUp = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'FollowUp' } },
+      { status: 'UNINITIALIZED' },
+      followUpDeps
+    );
+
+    assert.equal(followUp.ok, true, 'Same-avatar queue must be released after pre-read timeout');
+    assert.equal(followUpPosts, 1);
+    assert.equal(mergeCalls, 0, 'Original timed-out operation must never dispatch a POST');
+  });
+
+  await t.test('queue is released and follow-up succeeds after timeout and after rejection', async () => {
+    const avatarTimeout = uniqueAvatar('F1_QueueRelease_Timeout');
+    const avatarReject = uniqueAvatar('F1_QueueRelease_Reject');
+
+    // Timeout variant
+    const timeoutRes = await mutateCard(
+      { kind: 'installed-card', avatar: avatarTimeout },
+      { type: 'add', character: { name: 'A' } },
+      { status: 'UNINITIALIZED' },
+      createValidDependencies({
+        avatar: avatarTimeout,
+        readCard: () => new Promise(() => {}),
+        preReadTimeoutMs: 25,
+      })
+    );
+    assert.equal(timeoutRes.code, 'READ_FAILED');
+    assert.equal(timeoutRes.details?.reason, 'PRE_READ_TIMEOUT');
+
+    let followUpUuidTimeout = null;
+    const followUpFetchTimeout = createMockFetch([
+      { status: 200, body: createMockCard(avatarTimeout, undefined) },
+      (url, options) => {
+        const body = JSON.parse(options.body);
+        followUpUuidTimeout = body.data.extensions.chromaticHub.characters[0].id;
+        return { ok: true, status: 200, json: async () => ({}) };
+      },
+      () => ({
+        ok: true,
+        status: 200,
+        json: async () =>
+          createMockCard(avatarTimeout, {
+            schemaVersion: 1,
+            revision: 1,
+            characters: [{ id: followUpUuidTimeout, name: 'B', descriptor: '', aliases: [] }],
+          }),
+      }),
+    ]);
+    const okAfterTimeout = await mutateCard(
+      { kind: 'installed-card', avatar: avatarTimeout },
+      { type: 'add', character: { name: 'B' } },
+      { status: 'UNINITIALIZED' },
+      createValidDependencies({
+        avatar: avatarTimeout,
+        fetch: followUpFetchTimeout,
+        preReadTimeoutMs: 5000,
+      })
+    );
+    assert.equal(okAfterTimeout.ok, true, 'Queue must be released after pre-read timeout');
+
+    // Rejection variant
+    const rejectRes = await mutateCard(
+      { kind: 'installed-card', avatar: avatarReject },
+      { type: 'add', character: { name: 'A' } },
+      { status: 'UNINITIALIZED' },
+      createValidDependencies({
+        avatar: avatarReject,
+        readCard: async () => {
+          throw new Error('boom');
+        },
+        preReadTimeoutMs: 5000,
+      })
+    );
+    assert.equal(rejectRes.code, 'READ_FAILED');
+    assert.equal(rejectRes.details?.reason, 'PRE_READ_THROWN');
+
+    let followUpUuidReject = null;
+    const followUpFetchReject = createMockFetch([
+      { status: 200, body: createMockCard(avatarReject, undefined) },
+      (url, options) => {
+        const body = JSON.parse(options.body);
+        followUpUuidReject = body.data.extensions.chromaticHub.characters[0].id;
+        return { ok: true, status: 200, json: async () => ({}) };
+      },
+      () => ({
+        ok: true,
+        status: 200,
+        json: async () =>
+          createMockCard(avatarReject, {
+            schemaVersion: 1,
+            revision: 1,
+            characters: [{ id: followUpUuidReject, name: 'B', descriptor: '', aliases: [] }],
+          }),
+      }),
+    ]);
+    const okAfterReject = await mutateCard(
+      { kind: 'installed-card', avatar: avatarReject },
+      { type: 'add', character: { name: 'B' } },
+      { status: 'UNINITIALIZED' },
+      createValidDependencies({
+        avatar: avatarReject,
+        fetch: followUpFetchReject,
+        preReadTimeoutMs: 5000,
+      })
+    );
+    assert.equal(okAfterReject.ok, true, 'Queue must be released after a rejecting reader');
+  });
+
+  await t.test('different-avatar mutation proceeds while another avatar pre-read hangs', async () => {
+    const avatarA = uniqueAvatar('F1_Hanging_A');
+    const avatarB = uniqueAvatar('F1_Fast_B');
+    const ownerB = { kind: 'installed-card', avatar: avatarB };
+
+    let plannedUuid;
+    const mockFetchB = createMockFetch([
+      { status: 200, body: createMockCard(avatarB, undefined) },
+      (url, options) => {
+        const body = JSON.parse(options.body);
+        plannedUuid = body.data.extensions.chromaticHub.characters[0].id;
+        return { ok: true, status: 200, json: async () => ({}) };
+      },
+      () => ({
+        ok: true,
+        status: 200,
+        json: async () =>
+          createMockCard(avatarB, {
+            schemaVersion: 1,
+            revision: 1,
+            characters: [{ id: plannedUuid, name: 'Fast', descriptor: '', aliases: [] }],
+          }),
+      }),
+    ]);
+
+    const hangingOp = mutateCard(
+      { kind: 'installed-card', avatar: avatarA },
+      { type: 'add', character: { name: 'Hangs' } },
+      { status: 'UNINITIALIZED' },
+      createValidDependencies({
+        avatar: avatarA,
+        readCard: () => new Promise(() => {}),
+        preReadTimeoutMs: 300,
+      })
+    );
+
+    const fastRes = await mutateCard(
+      ownerB,
+      { type: 'add', character: { name: 'Fast' } },
+      { status: 'UNINITIALIZED' },
+      createValidDependencies({ avatar: avatarB, fetch: mockFetchB, preReadTimeoutMs: 5000 })
+    );
+
+    assert.equal(fastRes.ok, true, 'A different avatar must not be blocked by a hanging pre-read');
+
+    const hangingRes = await hangingOp;
+    assert.equal(hangingRes.ok, false);
+    assert.equal(hangingRes.code, 'READ_FAILED');
+    assert.equal(hangingRes.details?.reason, 'PRE_READ_TIMEOUT');
+  });
+
+  await t.test('invalid preReadTimeoutMs values rejected with zero network calls', async () => {
+    const avatar = uniqueAvatar('F1_InvalidPreReadTimeout');
+    const owner = { kind: 'installed-card', avatar };
+    let callsCount = 0;
+    const mockFetch = () => {
+      callsCount++;
+      return {};
+    };
+
+    const invalidCases = [
+      { preReadTimeoutMs: -10 },
+      { preReadTimeoutMs: 0 },
+      { preReadTimeoutMs: 'fast' },
+      { preReadTimeoutMs: NaN },
+      { preReadTimeoutMs: 3.14 },
+      { preReadTimeoutMs: 30001 },
+      { preReadTimeoutMs: Infinity },
+      { preReadTimeoutMs: Number.MAX_SAFE_INTEGER + 1 },
+    ];
+
+    for (const badOption of invalidCases) {
+      const deps = createValidDependencies({
+        avatar,
+        fetch: mockFetch,
+        ...badOption,
+      });
+      const res = await mutateCard(
+        owner,
+        { type: 'add', character: { name: 'BadPreReadTimeout' } },
+        { status: 'UNINITIALIZED' },
+        deps
+      );
+      assert.equal(res.ok, false, `Must reject ${JSON.stringify(badOption)}`);
+      assert.equal(res.code, 'INVALID_OPTIONS');
+    }
+    assert.equal(callsCount, 0, 'Zero network calls must be made on invalid preReadTimeoutMs');
+  });
+
+  await t.test('deterministic listener cleanup on success, timeout, and cancellation', async () => {
+    const avatarSuccess = uniqueAvatar('F1_Cleanup_Ok');
+    const avatarTimeout = uniqueAvatar('F1_Cleanup_Timeout');
+    const avatarCancel = uniqueAvatar('F1_Cleanup_Cancel');
+
+    // Case 1: successful read path cleans up the user-signal listener
+    const controllerSuccess = new AbortController();
+    const successRes = await mutateCard(
+      { kind: 'installed-card', avatar: avatarSuccess },
+      { type: 'add', character: { name: 'CleanupOk' } },
+      { status: 'UNINITIALIZED' },
+      createValidDependencies({
+        avatar: avatarSuccess,
+        readCard: async () => ({ ok: true, status: 'UNINITIALIZED', avatar: avatarSuccess }),
+        signal: controllerSuccess.signal,
+        preReadTimeoutMs: 5000,
+      })
+    );
+    assert.equal(successRes.ok, false); // expected: expectedSnapshot mismatch downstream
+    assert.notEqual(successRes.code, 'CARD_QUARANTINED');
+    assert.equal(countSignalEvents(controllerSuccess.signal), 0, 'Success path must leave zero listeners');
+
+    // Case 2: timeout path cleans up the user-signal listener
+    const controllerTimeout = new AbortController();
+    const timeoutRes = await mutateCard(
+      { kind: 'installed-card', avatar: avatarTimeout },
+      { type: 'add', character: { name: 'CleanupTimeout' } },
+      { status: 'UNINITIALIZED' },
+      createValidDependencies({
+        avatar: avatarTimeout,
+        readCard: () => new Promise(() => {}),
+        signal: controllerTimeout.signal,
+        preReadTimeoutMs: 20,
+      })
+    );
+    assert.equal(timeoutRes.code, 'READ_FAILED');
+    assert.equal(timeoutRes.details?.reason, 'PRE_READ_TIMEOUT');
+    assert.equal(countSignalEvents(controllerTimeout.signal), 0, 'Timeout path must leave zero listeners');
+
+    // Case 3: cancellation path cleans up the user-signal listener
+    const controllerCancel = new AbortController();
+    const cancelOp = mutateCard(
+      { kind: 'installed-card', avatar: avatarCancel },
+      { type: 'add', character: { name: 'CleanupCancel' } },
+      { status: 'UNINITIALIZED' },
+      createValidDependencies({
+        avatar: avatarCancel,
+        readCard: () => new Promise(() => {}),
+        signal: controllerCancel.signal,
+        preReadTimeoutMs: 30000,
+      })
+    );
+    setTimeout(() => controllerCancel.abort(), 10);
+    const cancelRes = await cancelOp;
+    assert.equal(cancelRes.code, 'OPERATION_CANCELLED');
+    assert.equal(countSignalEvents(controllerCancel.signal), 0, 'Cancellation path must leave zero listeners');
+  });
+
+  await t.test('pre-read deadline never fires on a default fast path (regression)', async () => {
+    const avatar = uniqueAvatar('F1_DefaultFastPath');
+    const owner = { kind: 'installed-card', avatar };
+    let plannedUuid;
+    const mockFetch = createMockFetch([
+      { status: 200, body: createMockCard(avatar, undefined) },
+      (url, options) => {
+        const body = JSON.parse(options.body);
+        plannedUuid = body.data.extensions.chromaticHub.characters[0].id;
+        return { ok: true, status: 200, json: async () => ({}) };
+      },
+      () => ({
+        ok: true,
+        status: 200,
+        json: async () =>
+          createMockCard(avatar, {
+            schemaVersion: 1,
+            revision: 1,
+            characters: [{ id: plannedUuid, name: 'Default', descriptor: '', aliases: [] }],
+          }),
+      }),
+    ]);
+    const deps = createValidDependencies({ avatar, fetch: mockFetch });
+
+    const res = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'Default' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+
+    assert.equal(res.ok, true);
+    assert.equal(res.status, 'VALID');
+    assert.equal(mockFetch.getCallCount(), 3);
+  });
+
+  await t.test('near-simultaneous completion and cancellation prefers cancellation', async () => {
+    const avatar = uniqueAvatar('F1_NearSimultaneous');
+    const owner = { kind: 'installed-card', avatar };
+    const userController = new AbortController();
+    let mergeCalls = 0;
+    const mockFetch = createMockFetch({
+      '/api/characters/merge-attributes': () => {
+        mergeCalls++;
+        return { ok: true, status: 200, json: async () => ({}) };
+      },
+    });
+    const deps = createValidDependencies({
+      avatar,
+      fetch: mockFetch,
+      readCard: async () => {
+        userController.abort();
+        return { ok: true, status: 'UNINITIALIZED', avatar };
+      },
+      signal: userController.signal,
+      preReadTimeoutMs: 5000,
+    });
+
+    const res = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'PhotoFinish' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+
+    assert.equal(res.ok, false);
+    assert.equal(res.code, 'OPERATION_CANCELLED');
+    assert.equal(mergeCalls, 0, 'Zero POSTs when cancellation coincides with completion');
+  });
+
+  await t.test('reader aborted by user signal rejects -> OPERATION_CANCELLED not READ_FAILED', async () => {
+    const avatar = uniqueAvatar('F1_ReaderRejectsOnAbort');
+    const owner = { kind: 'installed-card', avatar };
+    const userController = new AbortController();
+    let mergeCalls = 0;
+    const mockFetch = createMockFetch({
+      '/api/characters/merge-attributes': () => {
+        mergeCalls++;
+        return { ok: true, status: 200, json: async () => ({}) };
+      },
+    });
+    const deps = createValidDependencies({
+      avatar,
+      fetch: mockFetch,
+      readCard: async (targetOwner, opts) => {
+        await new Promise((r) => setTimeout(r, 20));
+        if (opts.signal?.aborted) {
+          const err = new Error('The user aborted a request.');
+          err.name = 'AbortError';
+          throw err;
+        }
+        return { ok: true, status: 'UNINITIALIZED', avatar };
+      },
+      signal: userController.signal,
+      preReadTimeoutMs: 30000,
+    });
+
+    const opPromise = mutateCard(
+      owner,
+      { type: 'add', character: { name: 'AbortsReader' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+    setTimeout(() => userController.abort(), 5);
+
+    const res = await opPromise;
+
+    assert.equal(res.ok, false);
+    assert.equal(res.code, 'OPERATION_CANCELLED');
+    assert.equal(mergeCalls, 0);
+  });
+
+  await t.test('POST and readback behavior unchanged after a bounded successful pre-read', async () => {
+    const avatar = uniqueAvatar('F1_UnchangedWireBehavior');
+    const owner = { kind: 'installed-card', avatar };
+    let plannedUuid;
+    let readbackSignalAborted = null;
+    const mockFetch = createMockFetch([
+      { status: 200, body: createMockCard(avatar, undefined) },
+      (url, options) => {
+        const body = JSON.parse(options.body);
+        plannedUuid = body.data.extensions.chromaticHub.characters[0].id;
+        return { ok: true, status: 200, json: async () => ({}) };
+      },
+      (url, options) => {
+        readbackSignalAborted = options.signal?.aborted;
+        return {
+          ok: true,
+          status: 200,
+          json: async () =>
+            createMockCard(avatar, {
+              schemaVersion: 1,
+              revision: 1,
+              characters: [{ id: plannedUuid, name: 'Unchanged', descriptor: '', aliases: [] }],
+            }),
+        };
+      },
+    ]);
+    const deps = createValidDependencies({
+      avatar,
+      fetch: mockFetch,
+      preReadTimeoutMs: 5000,
+    });
+
+    const res = await mutateCard(
+      owner,
+      { type: 'add', character: { name: 'Unchanged' } },
+      { status: 'UNINITIALIZED' },
+      deps
+    );
+
+    assert.equal(res.ok, true);
+    assert.equal(res.status, 'VALID');
+    assert.equal(res.value.characters[0].name, 'Unchanged');
+    assert.equal(readbackSignalAborted, false, 'Readback must keep using a fresh, unaborted signal');
+    assert.equal(mockFetch.getCallCount(), 3);
+  });
 });

@@ -4,9 +4,10 @@
  * Implements guarded, single-card mutation of data.extensions.chromaticHub.
  * Reuses pure core identity contracts and read-only SillyTavern adapter.
  *
- * Enforces hard network deadlines, quarantine on uncertainty, diagnostic privacy,
- * fail-closed dependency boundaries, post-dispatch exception containment, and
- * comprehensive resource cleanup.
+ * Enforces hard network deadlines (including a bounded, cancellable preliminary
+ * read), quarantine on uncertainty, diagnostic privacy, fail-closed dependency
+ * boundaries, post-dispatch exception containment, and comprehensive resource
+ * cleanup.
  */
 
 import { planMutation, serializeRegistry } from './identity-registry.mjs';
@@ -16,6 +17,8 @@ const DEFAULT_POST_TIMEOUT_MS = 10000;
 const MAX_POST_TIMEOUT_MS = 60000;
 const DEFAULT_VERIFY_TIMEOUT_MS = 5000;
 const MAX_VERIFY_TIMEOUT_MS = 30000;
+const DEFAULT_PRE_READ_TIMEOUT_MS = 5000;
+const MAX_PRE_READ_TIMEOUT_MS = 30000;
 
 const PNG_EXTENSION_REGEX = /\.[pP][nN][gG]$/;
 const CONTROL_CHARS_REGEX = /[\x00-\x1f\x7f-\x9f]/;
@@ -547,6 +550,33 @@ function validateDependencies(dependencies) {
     }
   }
 
+  let preReadTimeoutMs;
+  try {
+    preReadTimeoutMs = dependencies.preReadTimeoutMs;
+  } catch (_err) {
+    return {
+      ok: false,
+      code: 'INVALID_OPTIONS',
+      message: 'Failed to access preReadTimeoutMs option',
+      recoverable: false,
+    };
+  }
+  if (preReadTimeoutMs !== undefined) {
+    if (
+      typeof preReadTimeoutMs !== 'number' ||
+      !Number.isSafeInteger(preReadTimeoutMs) ||
+      preReadTimeoutMs <= 0 ||
+      preReadTimeoutMs > MAX_PRE_READ_TIMEOUT_MS
+    ) {
+      return {
+        ok: false,
+        code: 'INVALID_OPTIONS',
+        message: `preReadTimeoutMs must be a positive safe integer <= ${MAX_PRE_READ_TIMEOUT_MS}`,
+        recoverable: false,
+      };
+    }
+  }
+
   return { ok: true };
 }
 
@@ -1070,17 +1100,132 @@ export async function mutateCard(owner, command, expectedSnapshot, dependencies)
       };
     }
 
-    // 11. Pre-Read Card
+    // 11. Pre-Read Card (bounded, cancellable three-way race)
     const readCardFn = dependencies.readCard || defaultReadCard;
     const fetchFn = dependencies.fetch || globalThis.fetch;
-    preRead = await readCardFn(owner, {
-      getRequestHeaders: dependencies.getRequestHeaders,
-      fetch: fetchFn,
-      signal: dependencies.signal,
+
+    const preReadTimeoutMs = dependencies.preReadTimeoutMs ?? DEFAULT_PRE_READ_TIMEOUT_MS;
+    const preReadController = new AbortController();
+
+    let preReadTimer = null;
+    let onUserPreReadAbort = null;
+    let preReadOutcome = null; // 'READ_SETTLED' | 'PRE_READ_TIMEOUT' | 'USER_CANCELLED' | 'PRE_READ_THROWN'
+
+    let resolveUserCancel;
+    const userCancelPromise = new Promise((resolve) => {
+      resolveUserCancel = resolve;
     });
 
-    if (!preRead.ok) {
-      return preRead;
+    try {
+      const deadlinePromise = new Promise((resolve) => {
+        preReadTimer = setTimeout(() => {
+          preReadController.abort();
+          preReadOutcome = 'PRE_READ_TIMEOUT';
+          resolve(null);
+        }, preReadTimeoutMs);
+      });
+
+      if (dependencies.signal) {
+        onUserPreReadAbort = () => {
+          preReadController.abort();
+          if (preReadOutcome === null) {
+            preReadOutcome = 'USER_CANCELLED';
+          }
+          resolveUserCancel({ outcome: 'USER_CANCELLED' });
+        };
+        if (dependencies.signal.aborted) {
+          onUserPreReadAbort();
+        } else {
+          dependencies.signal.addEventListener('abort', onUserPreReadAbort, { once: true });
+        }
+      }
+
+      const rawPreReadPromise = (async () => {
+        try {
+          return {
+            outcome: 'READ_SETTLED',
+            value: await readCardFn(owner, {
+              getRequestHeaders: dependencies.getRequestHeaders,
+              fetch: fetchFn,
+              signal: preReadController.signal,
+            }),
+          };
+        } catch (_err) {
+          return { outcome: 'PRE_READ_THROWN' };
+        }
+      })();
+      rawPreReadPromise.catch(() => {});
+
+      const raced = await Promise.race([rawPreReadPromise, deadlinePromise, userCancelPromise]);
+
+      if (!raced || raced.outcome !== 'READ_SETTLED') {
+        preReadOutcome = raced ? raced.outcome : preReadOutcome ?? 'PRE_READ_TIMEOUT';
+        if (preReadOutcome === 'USER_CANCELLED') {
+          return {
+            ok: false,
+            code: 'OPERATION_CANCELLED',
+            message: 'Operation cancelled during preliminary read',
+            recoverable: false,
+          };
+        }
+        if (preReadOutcome === 'PRE_READ_THROWN') {
+          return {
+            ok: false,
+            code: 'READ_FAILED',
+            message: 'Preliminary card read failed',
+            recoverable: false,
+            details: { reason: 'PRE_READ_THROWN' },
+          };
+        }
+        return {
+          ok: false,
+          code: 'READ_FAILED',
+          message: 'Preliminary card read deadline exceeded',
+          recoverable: false,
+          details: { reason: 'PRE_READ_TIMEOUT' },
+        };
+      }
+
+      preRead = raced.value;
+
+      // Successful settlement: re-check caller cancellation before accepting the read
+      let userAbortedAfterRead = false;
+      try {
+        userAbortedAfterRead = Boolean(dependencies.signal?.aborted);
+      } catch (_sigErr) {
+        userAbortedAfterRead = true;
+      }
+      if (userAbortedAfterRead) {
+        return {
+          ok: false,
+          code: 'OPERATION_CANCELLED',
+          message: 'Operation cancelled during preliminary read',
+          recoverable: false,
+        };
+      }
+
+      if (!preRead || typeof preRead !== 'object') {
+        return {
+          ok: false,
+          code: 'READ_FAILED',
+          message: 'Preliminary card read returned an invalid result shape',
+          recoverable: false,
+          details: { reason: 'PRE_READ_THROWN' },
+        };
+      }
+
+      if (!preRead.ok) {
+        return preRead;
+      }
+    } finally {
+      if (preReadTimer !== null) {
+        clearTimeout(preReadTimer);
+        preReadTimer = null;
+      }
+      if (dependencies.signal && onUserPreReadAbort) {
+        dependencies.signal.removeEventListener('abort', onUserPreReadAbort);
+        onUserPreReadAbort = null;
+      }
     }
 
     // 12. Snapshot & Conflict Comparison
