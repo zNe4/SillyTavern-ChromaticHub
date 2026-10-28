@@ -1,36 +1,47 @@
-# ChromaticHub — Project status
+# ChromaticHub — project status
 
-**As of 2026-10-26/27.** Research-stage repository. **No production extension implementation.**
+**As of 2026-10-28.** Core and read-only adapter accepted; guarded mutation controller accepted **for synthetic testing only**. **No real-card write integration or native mutation acceptance has been authorized.**
 
-## Agent workflow adoption (pending review)
+## Accepted milestones
 
-- Prepared root `AGENTS.md` and [Antigravity CLI workflow](process/ANTIGRAVITY-WORKFLOW.md) in a separate documentation-only review branch.
-- Adopt: explicit exploration/plan approval, tests-first implementation loop, exact-file scope and independent review before publication.
-- No H01-B0 coding or tests have begun; this workflow setup does **not** authorize Antigravity to implement anything.
+| Milestone | Accepted outcome | Current limitation |
+| --- | --- | --- |
+| **H00** | Owner-reported P0–P3-D and post-restart P4 browser acceptance: card-scoped metadata persists through relevant character operations, rename, duplication, export/import and restart | Historical offline PNG/storage and checkout-status receipts remain outstanding |
+| **ADR-001 / H01-A** | Card-local identity design and scoped UUID semantics underpin the approved implementation | The original contract is labeled a proposed design; native-write and durable-locator questions remain open |
+| **H01-B0** | `src/identity-registry.mjs` accepted pure parser/resolver/mutation/serialization core | Pure code; no SillyTavern writes |
+| **H01-B1** | `src/sillytavern-adapter.mjs` accepted full-card, read-only adapter | No persistent mutation APIs |
+| **H01-B2** | `src/card-mutation-controller.mjs` accepted guarded add/update/remove implementation after R1/R2/R3 review | Synthetic-only; lacks native editor-state safety certification |
+| **OpenCode G0** | OpenCode / GLM 5.3 reported read-only verification of exact main, clean worktree and 201/201 passing native Node tests | Not yet evaluated as coding implementer; one controlled planning/implementation mission is next |
 
-## H00 evidence accepted
+**Main integration checkpoint:** `b97b55064021f74de324eaaa9f4c27ddb3c6013e` (H01-B2-R3), verified on GitHub on 2026-10-28. Later commits require a fresh baseline check.
 
-- **H00-A:** identity-model research completed; global registry option superseded by card-first choice.
-- **H00-B:** pinned SillyTavern source confirmed native namespaced card metadata.
-- **H00-C:** owner reported **P0–P3-D PASS** and **P4 post-restart browser PASS**; multiple same-name identities, cross-chat persistence, server restart, rename, duplication with independent edits, PNG and JSON export/import, and add/update/delete.
-- **ADR-001:** per-card storage accepted as the H01 architecture basis, not as finished extension software.
+**G0 test breakdown (owner-provided OpenCode report):** 60 identity-core + 58 read-adapter + 83 mutation-controller = **201 passed**, 0 failed or skipped; separate commands and combined suite reported exit status 0. This does not constitute independent observation of the local Node execution or native SillyTavern verification.
 
-## H01-A — design draft / awaiting owner and independent review
+## Current workflow
 
-- [Identity contract v0.1](design/H01-A-identity-contract-v0.1.md) — schema, scoped references, read/write semantics, error taxonomy, chat-local proposal, explicit limits.
-- [Test and bounded-mission plan](design/H01-A-acceptance-and-missions.md) — adversarial cases, owner signoff checklist and H01-B0/B1/B2/B3/C/D breakdown.
-- **H01-A is not frozen/approved solely by publication of its draft.** Critical uncertainties include dirty editor synchronization, lack of server-side CAS, rename missed-events and chat metadata durability.
-- **NEXT:** independent review and owner decision on H01-A D1–D8; only then authorize H01-B0 pure contract tests.
+- **ChatGPT:** research, architecture, documentation, task decomposition and independent acceptance/review.
+- **Coding agent:** trialing **OpenCode with GLM 5.3**, previously Antigravity. Restricted to approved code/tests and evidence-based handoff.
+- **Project owner:** permissions, native acceptance, Git publication/merge/release.
+- Read [AGENTS.md](../AGENTS.md) and [OpenCode workflow](process/OPENCODE-WORKFLOW.md); [historical Antigravity workflow](process/ANTIGRAVITY-WORKFLOW.md) is retained for reference.
+- Preserve independent **G0 inspect → G1 plan → G2 implement → G3 verify → G4 review → G5 owner-native** gates. A task branch push is not integration approval.
 
-## Remaining H00 evidence receipts
+## Next milestone: H01-B3 preparation — not yet native execution
 
-- **P4 offline PNG/storage verification and original-source-status receipt not supplied**; the successful browser P4 post-restart result is distinct.
-- Separate P2-C offline parser output likewise not supplied; restart API readback passed.
+**ChatGPT-owned research and acceptance planning**, followed by independent review. Priorities:
 
-## Roles and boundaries
+1. Prove or conservatively deny writes while the SillyTavern character editor is open, dirty, or has pending/debounced saves.
+2. Determine safe synchronization/reload of stale in-memory `characters`/`json_data` and how a later editor save can overwrite updated card data.
+3. Add/verify bounded pre-read behavior to prevent a reader that ignores abort from indefinitely holding a per-card controller queue.
+4. Design disposable character/card fixtures, isolation and rollback evidence for owner-native testing. Do not touch real cards.
+5. Account for no server CAS, cross-tab writers, rename/missed-locator events, ambiguous POST outcomes, ephemeral quarantine and separately authorized recovery.
 
-**ChatGPT** research, architecture, reviews and documentation. **Antigravity** bounded coding/testing only after approved assignment. **Owner** native testing and commit/merge/release authorization.
+**No production release, card-write activation, or H01-C chat-metadata mutation is authorized.**
 
-Do not create global person IDs, silently merge duplicate names/cards, move cN IDs into card metadata, persist autonomous NPCs, or generate images on registry reads.
+## Evidence debt and boundaries
 
-References: [ADR-001](decisions/ADR-001-card-scoped-identity.md) · [H00 source](research/H00-source-investigation.md) · [H00 acceptance](acceptance/H00-C-card-registry-acceptance.md).
+- H00 P4 offline PNG/storage validation and original checkout-status receipts were not supplied; the browser P4 result is a separate accepted observation. The separate P2-C offline parser receipt likewise remains unavailable.
+- Android/Termux, actual native editor races, group mutations and multiple-tab serialization are not proven.
+- Card UUIDs are **card-local**; avatar filenames are mutable locators, and SillyTavern `characterId` is ephemeral. ChromaticDialogue `cN`, ChromaticImages assets and ChromaticMessages timelines remain independently scoped.
+- The merged card-update route does not offer atomic compare-and-swap. Do not claim cross-tab transaction safety, never auto-retry an uncertain write, and never silently merge identities based on name.
+
+References: [ADR-001](decisions/ADR-001-card-scoped-identity.md) · [H00 research](research/H00-source-investigation.md) · [H00 acceptance](acceptance/H00-C-card-registry-acceptance.md) · [H01-A identity contract](design/H01-A-identity-contract-v0.1.md).
