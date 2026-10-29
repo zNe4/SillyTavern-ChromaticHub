@@ -1,5 +1,5 @@
 /**
- * SillyTavern-ChromaticHub: Deny-Only Editor-Safety Adapter (H01-B3-B / R1)
+ * SillyTavern-ChromaticHub: Deny-Only Editor-Safety Adapter (H01-B3-B / R1 / R2)
  *
  * createSillyTavernEditorSafetyAdapter({ probes }) returns a frozen adapter
  * whose checkEditorSafety(owner) is UNCONDITIONALLY deny-only: every
@@ -17,11 +17,14 @@
  * property access, invocation, and result inspection are guarded so that
  * hostile probes cannot leak exception details or card contents. A Promise
  * returned by a probe is detected and refused synchronously; it is never
- * awaited and never treated as a valid observation. To ensure a rejected
- * native Promise cannot surface as an unhandled process rejection after
- * the refusal, a no-op catch handler is attached to genuine native
- * promises ONLY, selected by brand detection that never invokes the
- * value's own "then". Arbitrary (non-native) thenables are never touched.
+ * awaited and never treated as a valid observation. To keep a rejected
+ * genuine native Promise from surfacing later as an unhandled process
+ * rejection, the intrinsic Promise.prototype.then is invoked with two
+ * no-op handlers: the engine gates that call behind an unspoofable
+ * internal-slot (IsPromise) check, and it never looks up — and therefore
+ * never invokes — the receiver's own "then", nor Symbol.toStringTag. Fake
+ * promises and arbitrary thenables are never touched; exceptions during
+ * suppression are fully contained (R2-F2).
  */
 
 import { evaluateEditorSafety, EDITOR_SAFETY_REASONS } from './editor-safety.mjs';
@@ -68,24 +71,56 @@ function isThenable(val) {
   );
 }
 
-// Brand tag for genuine native promises (and promise subclasses, whose
-// toStringTag is inherited from Promise.prototype).
-const NATIVE_PROMISE_TAG = '[object Promise]';
+// Intrinsic then, captured at module load. Invoked with .call(), never
+// through a looked-up property, so the receiver's own "then" — genuine,
+// overridden, or hostile — is never consulted during suppression.
+const INTRINSIC_PROMISE_THEN = Promise.prototype.then;
 
 /**
- * Suppresses unhandled-rejection fallout for genuine native promises only.
- * Brand detection via Object.prototype.toString never invokes the value's
- * own "then". Promise.prototype.catch requires real promise internal slots
- * and throws a TypeError for impostor thenables, which is swallowed here —
- * arbitrary thenable behavior is never invoked.
+ * Suppresses unhandled-rejection fallout for genuine native promises only
+ * (R2-F2). The engine gates Promise.prototype.then behind an unspoofable
+ * internal-slot check (IsPromise: [[PromiseState]]); a fake promise or an
+ * arbitrary thenable throws TypeError from that check BEFORE any property
+ * of the receiver is read, so hostile code never runs. Symbol.toStringTag
+ * is not consulted and cannot spoof identity. The receiver's own "then"
+ * (overridden, throwing, or absent) is never looked up. Both handlers must
+ * be the no-op: passing undefined as onFulfilled would let the settled
+ * value pass through and would assimilate a hostile thenable fulfillment
+ * value by invoking its "then".
+ *
+ * Species analysis: the derived promise is constructed through the
+ * receiver's constructor/Symbol.species chain. For ordinary native
+ * promises (Promise.reject/resolve results, async-function returns),
+ * subclasses that inherit the default species, and cross-realm promises,
+ * that chain is genuine engine code and runs no probe-authored code. A
+ * deliberately booby-trapped receiver (hostile own "constructor" or
+ * species) can substitute its own constructor, executing code with
+ * exactly the privileges the probe already had when it created the value;
+ * every exception on that path is contained here, the verdict is never
+ * consulted, and no diagnostic reflects it. The observation is refused
+ * regardless.
  */
 function suppressNativePromiseRejection(value) {
   try {
-    if (Object.prototype.toString.call(value) === NATIVE_PROMISE_TAG) {
-      Promise.prototype.catch.call(value, () => {});
-    }
+    INTRINSIC_PROMISE_THEN.call(value, suppressRejection, suppressRejection);
   } catch (_err) {
     // The observation is refused regardless.
+  }
+}
+function suppressRejection() {
+  // Intentionally empty: fulfillment and rejection are both discarded.
+}
+
+/**
+ * Own-property key inventory (string names AND symbols). Returns null when
+ * enumeration throws (e.g., a hostile proxy trap); callers treat null as
+ * a strict-shape failure.
+ */
+function safeOwnKeysAll(obj) {
+  try {
+    return [...Object.getOwnPropertyNames(obj), ...Object.getOwnPropertySymbols(obj)];
+  } catch (_err) {
+    return null;
   }
 }
 
@@ -123,6 +158,23 @@ function refusable() {
   return { status: 'unknown' };
 }
 
+// Options shape: exactly one permitted own key, "probes". Symbol keys,
+// non-enumerable extras, and enumeration traps all throw with controlled
+// messages that never echo property names or exception contents (R2-F1).
+const OPTIONS_ALLOWED_KEYS = Object.freeze(['probes']);
+
+function keysAreExactlyAllowed(keys, allowed) {
+  if (keys === null || keys.length !== allowed.length) {
+    return false;
+  }
+  for (const key of keys) {
+    if (typeof key !== 'string' || !allowed.includes(key)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /**
  * Creates an unconditionally deny-only editor-safety checker.
  *
@@ -136,8 +188,7 @@ export function createSillyTavernEditorSafetyAdapter(options) {
     throw new Error('Adapter options must be a plain object with a single "probes" key');
   }
 
-  const optionKeys = Object.getOwnPropertyNames(options);
-  if (optionKeys.length !== 1 || optionKeys[0] !== 'probes') {
+  if (!keysAreExactlyAllowed(safeOwnKeysAll(options), OPTIONS_ALLOWED_KEYS)) {
     throw new Error('Unknown adapter option; only { probes } is accepted');
   }
 
@@ -147,8 +198,13 @@ export function createSillyTavernEditorSafetyAdapter(options) {
   }
 
   // Only probe names are permitted; any other own key (string or symbol)
-  // throws, without echoing the key's name in the message.
-  for (const key of [...Object.getOwnPropertyNames(probes), ...Object.getOwnPropertySymbols(probes)]) {
+  // throws, without echoing the key's name in the message. Enumeration is
+  // guarded: a throwing ownKeys trap rejects the probes object outright.
+  const probeKeys = safeOwnKeysAll(probes);
+  if (probeKeys === null) {
+    throw new Error('Adapter probes keys could not be inspected');
+  }
+  for (const key of probeKeys) {
     if (typeof key !== 'string' || !PROBE_NAMES.includes(key)) {
       throw new Error('Unknown probe name in options.probes');
     }
@@ -193,10 +249,15 @@ export function createSillyTavernEditorSafetyAdapter(options) {
     if (raw === undefined) {
       return refusable();
     }
-    if (isThenable(raw)) {
-      // Refuse synchronously; suppress unhandled-rejection fallout for
-      // genuine native promises. Never await, never read the settled value.
+    if (raw !== null && (typeof raw === 'object' || typeof raw === 'function')) {
+      // R2-F2: attempt rejection suppression for every object-shaped result.
+      // The engine's IsPromise gate throws for non-promises BEFORE any
+      // property of the receiver is read, so arbitrary objects are never
+      // touched. This also covers genuine promises whose own "then" is
+      // hostile or absent, which thenable detection alone cannot classify.
       suppressNativePromiseRejection(raw);
+    }
+    if (isThenable(raw)) {
       return refusable();
     }
     return raw;

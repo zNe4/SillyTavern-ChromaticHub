@@ -1,5 +1,5 @@
 /**
- * SillyTavern-ChromaticHub: Deny-Only Editor-Safety Adapter Tests (H01-B3-B / R1)
+ * SillyTavern-ChromaticHub: Deny-Only Editor-Safety Adapter Tests (H01-B3-B / R1 / R2)
  *
  * Synthetic unit tests covering:
  * - Exhaustive deny-only boolean grid (all 64 combinations + avatar cases)
@@ -9,6 +9,11 @@
  *   symbol keys never appear in thrown messages)
  * - R1-F5: frozen adapter object; rejected native Promise probes create no
  *   unhandled rejection; arbitrary thenable `.then` is never invoked
+ * - R2-F1: strict option keys incl. symbol-keyed and non-enumerable extras
+ *   and throwing key-enumeration traps, all with controlled diagnostics
+ * - R2-F2: suppression cannot be spoofed via Symbol.toStringTag; a genuine
+ *   Promise with overridden or throwing `.then` is still suppressed; async
+ *   probes remain invalid; arbitrary thenable `.then` is never invoked
  * - Invalid owner rejection without probe consultation
  * - Fresh probe evaluation per invocation; sanitized diagnostics; immutability
  * - Controller composition: checkpoint counts, queue-wait and pre-POST safety
@@ -261,6 +266,56 @@ test('adapter - constructor strictness', async (t) => {
     });
     assert.throws(() => createSillyTavernEditorSafetyAdapter({ probes }));
   });
+
+  await t.test('R2-F1: symbol-keyed option property throws without leaking the symbol', () => {
+    assert.throws(
+      () => createSillyTavernEditorSafetyAdapter({ probes: makeProbes(), [Symbol(SECRET)]: 1 }),
+      (err) => !String(err.message).includes(SECRET),
+    );
+  });
+
+  await t.test('R2-F1: non-enumerable extra option property throws', () => {
+    const options = { probes: makeProbes() };
+    Object.defineProperty(options, 'hiddenExtra', {
+      value: 1,
+      enumerable: false,
+      configurable: true,
+    });
+    assert.throws(() => createSillyTavernEditorSafetyAdapter(options));
+  });
+
+  await t.test('R2-F1: hostile options ownKeys proxy trap throws a controlled error', () => {
+    const options = new Proxy({ probes: makeProbes() }, {
+      ownKeys() {
+        throw new Error(SECRET);
+      },
+    });
+    // isPlainObject passes the proxy (prototype lookup is unaffected);
+    // the guarded key enumeration must fail closed with a fixed message.
+    assert.throws(
+      () => createSillyTavernEditorSafetyAdapter(options),
+      (err) => err instanceof Error && !String(err.message).includes(SECRET),
+    );
+  });
+
+  await t.test('R2-F1: hostile probes ownKeys proxy trap throws a controlled error', () => {
+    const probes = new Proxy(makeProbes(), {
+      ownKeys() {
+        throw new Error(SECRET);
+      },
+    });
+    assert.throws(
+      () => createSillyTavernEditorSafetyAdapter({ probes }),
+      (err) => err instanceof Error && !String(err.message).includes(SECRET),
+    );
+  });
+
+  await t.test('R2-F1: valid minimal options object is still accepted', () => {
+    const adapter = createSillyTavernEditorSafetyAdapter({ probes: makeProbes() });
+    const decision = adapter.checkEditorSafety({ kind: 'installed-card', avatar: 'Target.png' });
+    assert.equal(decision.safe, false);
+    assert.equal(decision.reason, EDITOR_SAFETY_NOT_CERTIFIABLE);
+  });
 });
 
 test('adapter - guarded probe evaluation', async (t) => {
@@ -409,7 +464,7 @@ test('adapter - R1-F5 robustness', async (t) => {
       assert.deepEqual(decision.details.observedReasons, [EDITOR_SAFETY_REASONS.UNKNOWN_OBSERVATION]);
 
       // Give the microtask/macrotask queue a chance to surface an unhandled
-      // rejection; the adapter's no-op catch must have suppressed it.
+      // rejection; the adapter's no-op handlers must have suppressed it.
       await new Promise((resolve) => setTimeout(resolve, 50));
       assert.equal(rejections.length, 0, 'no unhandled rejection may escape the adapter');
     } finally {
@@ -496,6 +551,111 @@ test('adapter - R1-F5 robustness', async (t) => {
     const again = adapter.checkEditorSafety({ kind: 'installed-card', avatar: 'Target.png' });
     assert.equal(again.safe, false, '...but the adapter still refuses on every call');
     assert.equal(again.reason, EDITOR_SAFETY_NOT_CERTIFIABLE);
+  });
+});
+
+// R2-F2 regressions 4–6 (rejected ordinary native Promise, async rejecting
+// probe, arbitrary thenable) are the R1-F5 tests above; they exercise the
+// new intrinsic-then suppression mechanism unchanged. The suite below adds
+// the spoofing and hostile-receiver cases the old toStringTag-based check
+// could not survive.
+test('adapter - R2-F2 promise suppression hardening', async (t) => {
+  await t.test('R2-F2: fake Promise spoofing Symbol.toStringTag never has .then invoked', async () => {
+    const rejections = [];
+    const onUnhandled = (reason) => rejections.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      let fakeThenCalled = 0;
+      const fake = {
+        [Symbol.toStringTag]: 'Promise',
+        then(onFulfilled, onRejected) {
+          fakeThenCalled++;
+          return fake;
+        },
+      };
+      const probes = makeProbes();
+      probes.editorVisible = () => fake;
+      const adapter = createSillyTavernEditorSafetyAdapter({ probes });
+      const decision = adapter.checkEditorSafety({ kind: 'installed-card', avatar: 'Target.png' });
+      assert.equal(decision.safe, false);
+      assert.equal(decision.reason, EDITOR_SAFETY_NOT_CERTIFIABLE);
+      assert.deepEqual(decision.details.observedReasons, [EDITOR_SAFETY_REASONS.UNKNOWN_OBSERVATION]);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      assert.equal(fakeThenCalled, 0, 'a spoofed-identity fake promise must never have .then invoked');
+      assert.equal(rejections.length, 0);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
+  await t.test('R2-F2: genuine Promise with overridden own .then is suppressed without invoking it', async () => {
+    const rejections = [];
+    const onUnhandled = (reason) => rejections.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const p = Promise.reject(new Error('ordinary rejection'));
+      let overrideCalled = 0;
+      p.then = function () {
+        overrideCalled++;
+        return p;
+      };
+      const probes = makeProbes();
+      probes.editorDirty = () => p;
+      const adapter = createSillyTavernEditorSafetyAdapter({ probes });
+      const decision = adapter.checkEditorSafety({ kind: 'installed-card', avatar: 'Target.png' });
+      assert.equal(decision.safe, false);
+      assert.deepEqual(decision.details.observedReasons, [EDITOR_SAFETY_REASONS.UNKNOWN_OBSERVATION]);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      assert.equal(overrideCalled, 0, 'the overridden .then must never be invoked by suppression');
+      assert.equal(rejections.length, 0, 'the rejection must be suppressed despite the override');
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
+  await t.test('R2-F2: genuine Promise with throwing .then getter stays suppressed and contained', async () => {
+    const rejections = [];
+    const onUnhandled = (reason) => rejections.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const p = Promise.reject(new Error('ordinary rejection'));
+      Object.defineProperty(p, 'then', {
+        get() {
+          throw new Error(SECRET);
+        },
+        configurable: true,
+      });
+      const probes = makeProbes();
+      probes.saveInFlight = () => p;
+      const adapter = createSillyTavernEditorSafetyAdapter({ probes });
+      const decision = adapter.checkEditorSafety({ kind: 'installed-card', avatar: 'Target.png' });
+      assert.equal(decision.safe, false);
+      assert.deepEqual(decision.details.observedReasons, [EDITOR_SAFETY_REASONS.UNKNOWN_OBSERVATION]);
+      assert.equal(JSON.stringify(decision).includes(SECRET), false, 'the getter error must not leak');
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      assert.equal(rejections.length, 0, 'the rejection must be suppressed without reading .then');
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
+  await t.test('R2-F2: promise subclass rejection is also suppressed', async () => {
+    const rejections = [];
+    const onUnhandled = (reason) => rejections.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      class SubPromise extends Promise {}
+      const p = SubPromise.reject(new Error('subclass rejection'));
+      const probes = makeProbes();
+      probes.externalWriterSuspected = () => p;
+      const adapter = createSillyTavernEditorSafetyAdapter({ probes });
+      const decision = adapter.checkEditorSafety({ kind: 'installed-card', avatar: 'Target.png' });
+      assert.equal(decision.safe, false);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      assert.equal(rejections.length, 0, 'genuine subclass rejections must be suppressed too');
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
   });
 });
 
