@@ -81,7 +81,28 @@ Every persisted state compared using actual card data, **not** browser `characte
 - **Do not restore the original card automatically at the end of B1.** Restoration is a **separate future write** requiring owner approval, proof no fixture process or browser writes are active, hash check, and an offline exact-path copy. Prefer a cloned disposable fixture for future repeated scenarios rather than mutating the existing accepted baseline in place.
 - Never run `rm -rf` on guessed directories, `git reset`, `npm install`, or production-side tools. Existing owner checkout `/home/zzzne4/SillyTavern` (including dirty package manifests) is outside all write scopes.
 
-## 6. Review outcome and next authorization
+## 6. Owner authorization and one-shot executable (2026-10-29)
+
+The owner **explicitly authorized B1**, restricted to **one fixture-only JSON merge and one manual native editor Save** on the disposable card, with API/offline PNG verification and no automatic retry or restore.
+
+ChatGPT prepared the owner-run standalone Python script `chromatichub_h01b3c_b1_stale_editor.py`, as a conversation attachment **not committed to ChromaticHub source**, SHA-256:
+
+```text
+c6b333c47b5a48a5896b93b31400aa25c81901eb40d7cac3c88967c3bfb91ba9
+```
+
+**Execution still pending.** The script is pinned to `/tmp/ChromaticHub-H01B3C-P1A.mfsvd3mm` and its original PNG SHA `1c69551f1e4426c04dfed8726551d6b6df0b29a7f2e6fbd61c754fa856ea5048`. It is deliberately **one-shot**: it marks `receipts/c-p3b1-state.json` before launching the isolated server, refuses to rerun when the marker exists, and preserves separate `pre`, `post-merge`, `post-save` PNG snapshots. It inherits only the previously verified fixture configuration/dependency infrastructure, starts a fresh `--no-remote --new-instance --profile` Firefox, performs a read-only console hash probe of `#character_json_data` **before and after the merge**, and asks the owner to confirm there are no editor `/edit` network requests before merge and exactly one 200 after the single manual Save. The browser probe explicitly validates the selected avatar, form type, registry absence and full hidden-JSON SHA-256 against the original independent API readback.
+
+The script does **not** post `/api/characters/edit`: that is the single manual UI operation. It does post `/api/characters/merge-attributes` exactly once, guarded by explicit owner confirmation and a durable attempted marker, and independently checks PNG `chara`/`ccv3` (including PNG chunk CRC), fresh card API readback and full card content. Server and browser process cleanup is bounded to directly launched, identity-checked processes/groups; port release is checked before claiming success. **On STOP no rerun, deletion or restore is authorized.**
+
+**Synthetic verification, not native acceptance:** complete localhost integration with a mocked stale editor overwriting the registry PASS; fixture snapshots and one-shot refusal PASS; wrong browser hash STOP; duplicate merge STOP; unauthorized programmatic `/edit` STOP; script syntax/compile PASS. No real SillyTavern browser/editor was started in ChatGPT's environment.
+
+**B1 terminal output will determine acceptance** (must include `C_P3_B1=PASS`, `B1_REGISTRY_RESULT=REGISTRY_LOST|REGISTRY_PRESERVED`, `SERVER_STOPPED=YES`, `PORT_RELEASED=YES`, `BROWSER_STOPPED=YES`). The owner's browser network observation is a separately reported manual fact, not an independently captured network trace. No B2, B3, production write activation, concurrent write safety claim or fixture restoration is authorized.
+
+## 7. Review outcome
+
+**B1-D reviewed protocol and one-shot executable: ready for owner-native execution; pending result.** Only the specific B1 writes are authorized. The script may stop before merging when browser/UI environment fails to match the source-backed assumptions. Preserve all evidence, including partial state, when this happens. The H01-B3-B adapter remains unconditionally deny-only regardless of experimental outcome.
+
 
 **B1-D protocol review: ready for owner approval, not performed.** The above source inspection supports the candidate payload and sequence, but there is **no native browser observation yet** and no assumption that selecting the card/editor is free of automatic saves. The separately designed B1 execution tooling must validate all preconditions and fail closed if the actual UI behavior diverges. The B1 implementation/testing can be ChatGPT-owned as with C-P3-A; no Antigravity coding mission is required.
 
