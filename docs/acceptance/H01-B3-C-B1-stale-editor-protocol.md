@@ -218,6 +218,22 @@ BASELINE=PASS
 
 **Next read-only gate:** open the exact target card's editor without modifying fields; set Firefox Network log preservation; compare SHA-256 of the original hidden `#character_json_data` to the **ccv3** (preferred by the pinned `character-card-parser.js`) or `chara` JSON text extracted from the preserved PNG, alongside the selected `avatar_url`, action type and absent `chromaticHub`. The earlier baseline script validated `chara` but did not establish the hidden string's equality. Stop if a native `/api/characters/edit` occurs while opening the editor. **Do not submit the B1 merge until these checks pass.**
 
+### B1-DIRECT editor snapshot checkpoint (owner-reported, 2026-10-29)
+
+The owner extracted and parsed the preserved **ccv3** PNG metadata and compared its raw string to Firefox's current `#character_json_data`. Owner output:
+
+```text
+REFERENCE_SOURCE=ccv3
+REFERENCE_JSON_SHA256=9f66a4742ccafc2342bb05d49427ffc2d19547059f102226f7473be0c377b424
+REFERENCE_READY=YES
+EDITOR_ACTION=editcharacter
+AVATAR_MATCH=true
+REGISTRY_ABSENT=true
+EDITOR_JSON_SHA256=9f66a4742ccafc2342bb05d49427ffc2d19547059f102226f7473be0c377b424
+```
+
+**Decision: hidden editor JSON fingerprint accepted on owner-reported evidence.** The selected editor form is correctly targeted, the registry is absent, and the raw hidden JSON matches the accepted pre-merge PNG `ccv3` metadata byte-for-byte. **Still pending:** owner confirmation of *zero* `/api/characters/edit` requests in Firefox Network since opening; no merge may be sent until this separate check passes. **No B1 direct merge, editor Save, or readback outcome has yet been reported.**
+
 ## 7. Review outcome
 
 **The owner elected to use the regular testing-only SillyTavern checkout for the next B1 attempt.** The original B1-R1 and planned B1-R2 fixture scripts remain retired; their evidence must be preserved. The next test must target one newly created disposable card, have a separate verified backup and only one merge plus one manual editor Save. No native overwrite outcome exists yet. H01-B3-B remains deny-only.
