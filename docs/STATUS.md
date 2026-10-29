@@ -1,6 +1,6 @@
 # ChromaticHub — project status
 
-**As of 2026-10-28.** Current integration: `e3e489a4f2444b98e031021b5f0246372ac5e644` on `main`. **H01-B3-B accepted for synthetic testing only. No native card-write activation is authorized.**
+**As of 2026-10-28.** Last accepted code milestone (H01-B3-B) integrated at `e3e489a4f2444b98e031021b5f0246372ac5e644` on `main`. **H01-B3-B accepted for synthetic testing only. No native card-write activation is authorized.**
 
 ## Accepted milestones
 
