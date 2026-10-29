@@ -85,6 +85,28 @@ H00-C's earlier fixture used separate source/dependency copy plus an isolated da
 
 **C-P1-D output:** a proposed fixture layout, exact ownership/containment rules, planned command review and a STOP decision. **C-P1-A physical assembly** is a separate owner-approved action. **C-P2 server startup/read-only observation** and **C-P3 disposable mutation experiments** remain distinct future gates.
 
+### C-P1-A — owner-native preparation receipt (2026-10-28)
+
+The owner separately authorized **filesystem preparation only**, ran the independently prepared `chromatichub_h01b3c_p1a_prepare.py` on their own Arch Linux host and supplied the following **owner-reported terminal receipt**:
+
+```text
+FIXTURE_ROOT=/tmp/ChromaticHub-H01B3C-P1A.mfsvd3mm
+C_P1_A=PASS
+SOURCE_HEAD=4ceca42ba2bef15f7c0f9f1040368260c8588b92
+POST_COPY_SYMLINKS=40
+POST_COPY_ABSOLUTE=0
+POST_COPY_ESCAPING=0
+POST_COPY_BROKEN=0
+SERVER_STARTED=NO
+CARD_MUTATIONS=NO
+NEXT_GATE=C-P2_REVIEW_REQUIRED
+```
+
+The reviewed script archives the **committed** source SHA (excluding dirty owner package manifests), copies dependencies without dereferencing symlinks, generates a separate minimal fixture config/data/profile, and writes `receipts/manifest.json`. Its printed result is **not independent ChatGPT observation of the owner's filesystem**; manifest contents and source checksums have not yet been independently provided. The fixture config contains candidate port **18283**, explicitly **not yet checked free**; neither server startup nor disposable-card creation has been authorized. `C-P1-A` is **accepted on the owner's reported script execution**; C-P2 must revalidate the on-disk manifest, fixture boundaries, candidate port, effective startup mode and absence of provider integrations before any launch.
+
+**Preserve fixture root and receipts until C-P2 decision; do not clean, reassemble or start automatically.** The existing original checkout's `package.json`, `package-lock.json`, `config.yaml`, `data/` and dependencies remain outside the approved write scope.
+
+
 ### Remaining read-only checks before C-P1-A authorization
 
 - **Completed:** owner audited the installed `node_modules` tree: SYMLINKS=40; ABSOLUTE=0; ESCAPING_CHECKOUT=0; BROKEN=0; COPY_PREFLIGHT=PASS. Recheck all containment after any future copy.
@@ -123,4 +145,4 @@ The experiment harness must not monkey-patch live SillyTavern or send mutation r
 
 ## Decision needed after C-P0
 
-Source compatibility, basic configured paths, and source dependency symlink audit now pass. **C-P1-D isolated-fixture design is complete for owner review.** Explicit owner approval is still required for **C-P1-A physical assembly**, followed by separate permission for server startup and read-only observation (C-P2). Do not infer permission to start a server, mutate even a disposable card, or create an Antigravity task. **No Antigravity coding task is currently warranted.**
+Source compatibility, basic configured paths and dependency-symlink audit pass. **C-P1-A filesystem-only assembly was owner-reported PASS** at `/tmp/ChromaticHub-H01B3C-P1A.mfsvd3mm`. Next: read-only manifest verification and a separately scoped **C-P2 isolated startup/observation authorization**, including a fresh port check. **C-P3 card mutations remain unauthorized; no Antigravity coding task is warranted.**
