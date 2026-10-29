@@ -40,11 +40,11 @@ These rules apply regardless of agent. **ChromaticHub remains a small card-scope
 
 ## Architecture and safety invariants
 
-- Reusable identities live under `data.extensions.chromaticHub` on each installed card. UUIDs are card-local; identical names or copied UUIDs do not establish global identity.
+- **ADR-002 (research branch; accepted V1 direction):** reusable identity authority moves to private per-user `chromaticHub/cards/<installedCardId>/state.json` files via a companion server plugin. `data.extensions.chromaticHub` remains **legacy PNG metadata**, never an automatic fallback or second authority. Current implemented modules still target the legacy path and MUST NOT be activated; pure card-local UUID rules remain valid. Identical names/copied UUIDs never establish shared identity.
 - SillyTavern's `characterId` is an ephemeral array index; avatar filenames are mutable locators, not permanent global IDs.
 - ChromaticDialogue `cN`, chat-local NPCs, ChromaticMessages timelines and ChromaticImages assets retain their own ownership. No implicit promotion, name-based inference or identity merge.
 - H01-B2-F1's mutation controller and H01-B3-B's editor-safety evaluator/adapter are **accepted for synthetic testing only**. The runtime editor-safety adapter is deliberately **deny-only**. No real-card mutation or production activation is authorized.
-- Future writes require explicit owner approval, exact locator/context validation, editor-save safety, and independent persisted readback. The SillyTavern merge route has **no server-side compare-and-swap**; per-card in-process queues do not provide cross-tab atomicity.
+- Future **sidecar** writes require explicit owner approval, authenticated user-scoped plugin persistence, exact owner/locator checks under the documented pragmatic Option A trust model, **server-side serialized record-revision CAS**, atomic file replacement and independent persisted readback. The old SillyTavern PNG merge route has no CAS and is forbidden as registry authority; the B1 native test proved stale editor autosave erases that metadata.
 - Unknown schemas, stale/ambiguous identities, uncertain writes and unobservable editor-save activity must fail closed. No automatic retry after ambiguous POST completion; quarantine unresolved card outcomes.
 - Do not log, publish or include credentials, private character contents, chats, prompts or image bytes in review artifacts.
 
