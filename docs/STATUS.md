@@ -1,6 +1,6 @@
 # ChromaticHub — project status
 
-**Research-branch update (2026-10-29; not merged into main):** H01-B3-C-B1 owner-native test **reproduced `REGISTRY_LOST`** after a normal stale-editor autosave, with matching final PNG/API fingerprints and all five changed metadata field paths accounted for. The owner endorsed moving ChromaticHub's authoritative store into **per-user, per-installed-card directories** managed by an explicitly enabled companion SillyTavern server plugin. [H01-B3-D1 lifecycle research](research/H01-B3-D1-native-lifecycle-binding.md) is source-reviewed; [ADR-002 external persistence](decisions/ADR-002-external-card-scoped-persistence.md) is **PROPOSED for owner review**, *not accepted*. No native plugin installation, production data mutation, old adapter activation, or Antigravity implementation mission is authorized. Main remains unchanged by these research commits.
+**Research-branch update (2026-10-29; not merged into main):** H01-B3-C-B1 owner-native test **reproduced `REGISTRY_LOST`** after a normal stale-editor autosave, with matching final PNG/API fingerprints and all five changed metadata field paths accounted for. The owner endorsed **per-user, per-installed-card directories** with a companion SillyTavern server plugin and selected **Option A**: uniquely matching recorded PNG filename reconnects automatically after restart, with no routine re-confirmation and known inability to detect an invisible same-name replacement. [H01-B3-D1 lifecycle research](research/H01-B3-D1-native-lifecycle-binding.md) is source-reviewed; [ADR-002 external persistence](decisions/ADR-002-external-card-scoped-persistence.md) is **ACCEPTED as V1 architectural direction**, while exact storage/API schema and native deployment remain gated. [H01-B3-D2 roadmap](design/H01-B3-D2-sidecar-implementation-roadmap.md) defines separate D2-A contract, synthetic, server-plugin and native acceptance missions. No native plugin installation, production data mutation, old adapter activation, or Antigravity implementation mission is authorized. Main remains unchanged by these research commits.
 
 **As of 2026-10-28.** Last accepted code milestone (H01-B3-B) integrated at `e3e489a4f2444b98e031021b5f0246372ac5e644` on `main`. **H01-B3-B accepted for synthetic testing only. No native card-write activation is authorized.**
 
@@ -25,7 +25,13 @@
 - Active rules: [`AGENTS.md`](../AGENTS.md) · [Antigravity workflow](process/ANTIGRAVITY-WORKFLOW.md). [OpenCode trial guidance](process/OPENCODE-WORKFLOW.md) is retained as historical evidence.
 - Keep G0 inspection → G1 plan → G2 implementation → G3 verification → G4 independent review → G5 owner-native acceptance. No automatic gate advancement.
 
-## Next milestone: H01-B3-C — research and isolated native preparation
+## Next milestone: H01-B3-D2-A — sidecar state/API contract freeze
+
+**Owner-approved architectural direction:** ADR-002 pragmatic Option A. **ChatGPT** freezes the schema, server-side CAS, error states, owner-binding transitions and explicit backup/portability warning before any Antigravity coding assignment. [Roadmap](design/H01-B3-D2-sidecar-implementation-roadmap.md). After contract review, issue a bounded Antigravity G0/G1 plan-only mission for pure state-machine implementation; the owner approves subsequent implementation gates separately.
+
+## Historical H01-B3-C research scope (completed with B1 registry loss)
+
+
 
 **Research and acceptance-protocol ownership: ChatGPT. Implementation/native testing are NOT yet authorized.**
 
