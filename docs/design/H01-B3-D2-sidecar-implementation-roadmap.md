@@ -56,4 +56,4 @@
 
 ## Next actual task
 
-**D2-A — contract freeze, by ChatGPT.** After its review and owner approval, issue Antigravity a **G0/G1 plan-only** prompt for the pure state-machine milestone D2-B with exact repository baseline and changed-file scope. No implementation authorization is implied by this roadmap.
+**D2-A — contract candidate prepared by ChatGPT:** [sidecar state/API contract v1](H01-B3-D2-A-sidecar-state-api-contract-v1.md). **Awaiting owner/independent review** before freeze and implementation. After approval, issue Antigravity a **G0/G1 plan-only** prompt for the pure state-machine milestone D2-B with exact repository baseline and changed-file scope. No implementation authorization is implied by this roadmap.
