@@ -232,7 +232,32 @@ REGISTRY_ABSENT=true
 EDITOR_JSON_SHA256=9f66a4742ccafc2342bb05d49427ffc2d19547059f102226f7473be0c377b424
 ```
 
-**Decision: hidden editor JSON fingerprint accepted on owner-reported evidence.** The selected editor form is correctly targeted, the registry is absent, and the raw hidden JSON matches the accepted pre-merge PNG `ccv3` metadata byte-for-byte. **Still pending:** owner confirmation of *zero* `/api/characters/edit` requests in Firefox Network since opening; no merge may be sent until this separate check passes. **No B1 direct merge, editor Save, or readback outcome has yet been reported.**
+**Decision: hidden editor JSON fingerprint accepted on owner-reported evidence.** The selected editor form is correctly targeted, the registry is absent, and the raw hidden JSON matches the accepted pre-merge PNG `ccv3` metadata byte-for-byte. **Still pending:** owner confirmation of *zero* `/api/characters/edit` requests in Firefox Network since opening; no merge may be sent until this separate check passes. **Later B1-DIRECT merge/disk persistence evidence is recorded below; editor Save remains pending.**
+
+### B1-DIRECT — one merge submitted; independent PNG persistence verified (2026-10-29)
+
+Owner console output from a **single attempted** merge request:
+
+```text
+B1_PREMERGE_EDITOR=PASS
+B1_PREMERGE_API=PASS
+B1_MERGE_ATTEMPTED=YES
+B1_MERGE_HTTP=200
+B1_MERGE=AWAITING_DISK_VERIFICATION
+```
+
+Then the owner independently inspected the test card's persisted PNG, validated the `chara` and `ccv3` content and CRC, checked unrelated metadata against the preserved baseline, and wrote a fixture-external `post-merge.png` snapshot:
+
+```text
+REGISTRY_REVISION_1=PASS
+UNRELATED_METADATA_PRESERVED=PASS
+POST_MERGE_CARD_SHA256=24313b0359c58763f1e667ef86abc73ceaf04a9a7de1ffc5340f8dbc2b6886ed
+POST_MERGE_JSON_SHA256=572cfbc3c7bd7d5565fb116cea8985da56dfba6cdad62e251876bf54ae25f84e
+POST_MERGE_SNAPSHOT=PASS
+POST_MERGE=PASS
+```
+
+**Decision: post-merge disk persistence PASS on owner-reported native evidence.** A valid empty registry `{schemaVersion:1,revision:1,characters:[]}` is now persisted at `data.extensions.chromaticHub`. The baseline `pre-merge.png` remains hash `6593f9ff1320afff74a0b434ab92b6deb8701addc32a55afff8a723ad2e92aab`; `post-merge.png` is preserved under `/home/zzzne4/ChromaticHub-B1-direct._xlayxdb`. **The manual UI editor Save has not been attempted.** A **fresh post-merge `/api/characters/get` readback**, current editor hidden-JSON recheck, and explicit Network-panel confirmation of no earlier `/api/characters/edit` requests are **still outstanding** before B1 Save. The pre-merge client API check did pass, but it does not substitute for post-merge independent API verification. Do not infer a browser-safe write window from this disk success.
 
 ## 7. Review outcome
 
