@@ -1,5 +1,5 @@
 /**
- * SillyTavern-ChromaticHub: Deny-Only Editor-Safety Adapter (H01-B3-B / R1 / R2)
+ * SillyTavern-ChromaticHub: Deny-Only Editor-Safety Adapter (H01-B3-B / R1 / R2 / R3)
  *
  * createSillyTavernEditorSafetyAdapter({ probes }) returns a frozen adapter
  * whose checkEditorSafety(owner) is UNCONDITIONALLY deny-only: every
@@ -17,14 +17,24 @@
  * property access, invocation, and result inspection are guarded so that
  * hostile probes cannot leak exception details or card contents. A Promise
  * returned by a probe is detected and refused synchronously; it is never
- * awaited and never treated as a valid observation. To keep a rejected
- * genuine native Promise from surfacing later as an unhandled process
- * rejection, the intrinsic Promise.prototype.then is invoked with two
- * no-op handlers: the engine gates that call behind an unspoofable
- * internal-slot (IsPromise) check, and it never looks up — and therefore
- * never invokes — the receiver's own "then", nor Symbol.toStringTag. Fake
- * promises and arbitrary thenables are never touched; exceptions during
- * suppression are fully contained (R2-F2).
+ * awaited and never treated as a valid observation.
+ *
+ * Unhandled-rejection suppression (R3-F2) covers ORDINARY native promises
+ * of this realm only: receivers whose [[Prototype]] is the intrinsic
+ * Promise.prototype and that have no own "constructor" property. For those,
+ * the intrinsic Promise.prototype.then attaches no-op handlers through
+ * engine data properties without reading the receiver's own "then",
+ * "constructor", or Symbol.species surfaces, and without consulting any
+ * spoofable tag. Subclass instances, custom species, cross-realm promises,
+ * proxies, and receivers carrying an own "constructor" are explicitly NOT
+ * suppressed; suppressing them is impossible without executing
+ * user-controlled hooks, so their rejections are left to the host. All
+ * suppression-path exceptions are contained.
+ *
+ * Constructor failures (R3-F1) are fully contained: prototype inspection,
+ * property access, own-key enumeration, and applicable proxy traps are
+ * guarded, and every thrown diagnostic is a fixed message that never
+ * interpolates property names or exception contents.
  */
 
 import { evaluateEditorSafety, EDITOR_SAFETY_REASONS } from './editor-safety.mjs';
@@ -48,8 +58,35 @@ function isPlainObject(val) {
   if (val === null || typeof val !== 'object' || Array.isArray(val)) {
     return false;
   }
-  const proto = Object.getPrototypeOf(val);
+  let proto;
+  try {
+    proto = Object.getPrototypeOf(val);
+  } catch (_err) {
+    // Hostile getPrototypeOf trap (R3-F1): fail closed, no leak.
+    return false;
+  }
   return proto === Object.prototype || proto === null;
+}
+
+// Guarded prototype lookup used for the ordinary-promise precheck (R3-F2).
+// Returns null on any failure or trap; callers treat null as unsupported.
+function safeGetPrototypeOf(val) {
+  try {
+    return Object.getPrototypeOf(val);
+  } catch (_err) {
+    return null;
+  }
+}
+
+// Guarded own-property lookup used for the ordinary-promise precheck
+// (R3-F2). Returns the sentinel on any failure or trap.
+const LOOKUP_FAILED = Symbol('adapterLookupFailed');
+function safeLookupOwn(obj, key) {
+  try {
+    return Object.getOwnPropertyDescriptor(obj, key);
+  } catch (_err) {
+    return LOOKUP_FAILED;
+  }
 }
 
 function safeGet(obj, key) {
@@ -76,35 +113,51 @@ function isThenable(val) {
 // overridden, or hostile — is never consulted during suppression.
 const INTRINSIC_PROMISE_THEN = Promise.prototype.then;
 
+// Ordinary-promise support boundary (R3-F2): exactly the receiver shape
+// whose species chain is engine-owned data and therefore runs no
+// user-controlled code inside Promise.prototype.then. Everything else
+// (subclasses, custom species, cross-realm, proxies, own "constructor")
+// is deliberately unsupported — see suppressNativePromiseRejection.
+const IS_ORDINARY_PROMISE_RECEIVER = (value) => {
+  if (safeGetPrototypeOf(value) !== Promise.prototype) {
+    return false;
+  }
+  // Own "constructor" would be read by SpeciesConstructor (user hook).
+  const ownCtor = safeLookupOwn(value, 'constructor');
+  if (ownCtor !== undefined) {
+    return false;
+  }
+  return true;
+};
+
 /**
- * Suppresses unhandled-rejection fallout for genuine native promises only
- * (R2-F2). The engine gates Promise.prototype.then behind an unspoofable
- * internal-slot check (IsPromise: [[PromiseState]]); a fake promise or an
- * arbitrary thenable throws TypeError from that check BEFORE any property
- * of the receiver is read, so hostile code never runs. Symbol.toStringTag
- * is not consulted and cannot spoof identity. The receiver's own "then"
- * (overridden, throwing, or absent) is never looked up. Both handlers must
- * be the no-op: passing undefined as onFulfilled would let the settled
- * value pass through and would assimilate a hostile thenable fulfillment
- * value by invoking its "then".
+ * Suppresses unhandled-rejection fallout for ordinary native promises of
+ * this realm only (R3-F2). Supported receiver: [[Prototype]] is the
+ * intrinsic Promise.prototype and no own "constructor" property. For that
+ * receiver, SpeciesConstructor resolves to Promise[Symbol.species] without
+ * reading any receiver-controlled value, and Promise.prototype.then:
+ * - gates on the unspoofable IsPromise internal-slot check;
+ * - never reads the receiver's own "then" (overridden/throwing/absent);
+ * - consults no spoofable tag (Symbol.toStringTag is irrelevant);
+ * - attaches BOTH no-op handlers, so the settled value is never passed
+ *   through and never assimilates a hostile thenable fulfillment value.
  *
- * Species analysis: the derived promise is constructed through the
- * receiver's constructor/Symbol.species chain. For ordinary native
- * promises (Promise.reject/resolve results, async-function returns),
- * subclasses that inherit the default species, and cross-realm promises,
- * that chain is genuine engine code and runs no probe-authored code. A
- * deliberately booby-trapped receiver (hostile own "constructor" or
- * species) can substitute its own constructor, executing code with
- * exactly the privileges the probe already had when it created the value;
- * every exception on that path is contained here, the verdict is never
- * consulted, and no diagnostic reflects it. The observation is refused
- * regardless.
+ * Deliberate limitation, not a missed case: subclass instances, custom
+ * species, cross-realm promises, proxies, and receivers with an own
+ * "constructor" are NOT suppressed, because suppressing them requires
+ * executing user-controlled constructor/species hooks. Their rejections
+ * are left to the host process. The adapter never relies on suppression:
+ * every decision remains safe: false regardless, and no diagnostic
+ * reflects any suppression-path exception.
  */
 function suppressNativePromiseRejection(value) {
+  if (!IS_ORDINARY_PROMISE_RECEIVER(value)) {
+    return;
+  }
   try {
     INTRINSIC_PROMISE_THEN.call(value, suppressRejection, suppressRejection);
   } catch (_err) {
-    // The observation is refused regardless.
+    // Contained; the observation is refused regardless.
   }
 }
 function suppressRejection() {
@@ -175,8 +228,37 @@ function keysAreExactlyAllowed(keys, allowed) {
   return true;
 }
 
+// R3-F1: guarded own-descriptor lookup for the options "probes" access.
+// A throwing accessor (or proxy trap) yields LOOKUP_FAILED, which is
+// converted into a controlled throw — never a raw exception leak.
+function safeReadProbesOption(options) {
+  let descriptor;
+  try {
+    descriptor = Object.getOwnPropertyDescriptor(options, 'probes');
+  } catch (_err) {
+    return LOOKUP_FAILED;
+  }
+  if (descriptor === undefined) {
+    return undefined;
+  }
+  if (typeof descriptor.get === 'function' || typeof descriptor.set === 'function') {
+    let value;
+    try {
+      value = descriptor.get.call(options);
+    } catch (_err) {
+      return LOOKUP_FAILED;
+    }
+    return { value };
+  }
+  return { value: descriptor.value };
+}
+
 /**
  * Creates an unconditionally deny-only editor-safety checker.
+ *
+ * Every failure path — hostile prototype traps, throwing accessors, own-key
+ * enumeration traps — throws a fixed, controlled message (R3-F1). Raw
+ * exception contents and property names are never exposed.
  *
  * @param {object} options - { probes } with one synchronous probe per
  *   observation field. Unknown option keys (including "posture") throw
@@ -192,7 +274,13 @@ export function createSillyTavernEditorSafetyAdapter(options) {
     throw new Error('Unknown adapter option; only { probes } is accepted');
   }
 
-  const probes = options.probes;
+  // R3-F1: guarded access to the "probes" value; accessor or trap throws
+  // are converted to a controlled failure.
+  const probesEntry = safeReadProbesOption(options);
+  if (probesEntry === LOOKUP_FAILED) {
+    throw new Error('Adapter options could not be inspected');
+  }
+  const probes = probesEntry === undefined ? undefined : probesEntry.value;
   if (!isPlainObject(probes) || Object.prototype.hasOwnProperty.call(probes, '__proto__')) {
     throw new Error('options.probes must be a plain object');
   }
@@ -250,11 +338,14 @@ export function createSillyTavernEditorSafetyAdapter(options) {
       return refusable();
     }
     if (raw !== null && (typeof raw === 'object' || typeof raw === 'function')) {
-      // R2-F2: attempt rejection suppression for every object-shaped result.
-      // The engine's IsPromise gate throws for non-promises BEFORE any
-      // property of the receiver is read, so arbitrary objects are never
-      // touched. This also covers genuine promises whose own "then" is
-      // hostile or absent, which thenable detection alone cannot classify.
+      // R2-F2/R3-F2: attempt rejection suppression for every object-shaped
+      // result. The ordinary-promise precheck reads only prototype and
+      // own-descriptor data (guarded); the engine's IsPromise gate throws
+      // for non-promises before any further receiver property is read, so
+      // arbitrary objects are never touched. This covers genuine promises
+      // whose own "then" is hostile or absent, which thenable detection
+      // alone cannot classify. Unsupported exotic receivers are skipped
+      // by design; see suppressNativePromiseRejection.
       suppressNativePromiseRejection(raw);
     }
     if (isThenable(raw)) {

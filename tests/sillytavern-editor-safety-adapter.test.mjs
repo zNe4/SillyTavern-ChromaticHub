@@ -1,5 +1,5 @@
 /**
- * SillyTavern-ChromaticHub: Deny-Only Editor-Safety Adapter Tests (H01-B3-B / R1 / R2)
+ * SillyTavern-ChromaticHub: Deny-Only Editor-Safety Adapter Tests (H01-B3-B / R1 / R2 / R3)
  *
  * Synthetic unit tests covering:
  * - Exhaustive deny-only boolean grid (all 64 combinations + avatar cases)
@@ -14,6 +14,13 @@
  * - R2-F2: suppression cannot be spoofed via Symbol.toStringTag; a genuine
  *   Promise with overridden or throwing `.then` is still suppressed; async
  *   probes remain invalid; arbitrary thenable `.then` is never invoked
+ * - R3-F1: constructor exception containment (prototype traps, throwing
+ *   accessors on options.probes, descriptor traps) with controlled,
+ *   non-leaking diagnostics
+ * - R3-F2: suppression support boundary — ordinary native promises of this
+ *   realm only; hostile constructor getters never execute; subclass,
+ *   custom-species, and other exotic receivers are skipped by design and
+ *   their rejections left to the host
  * - Invalid owner rejection without probe consultation
  * - Fresh probe evaluation per invocation; sanitized diagnostics; immutability
  * - Controller composition: checkpoint counts, queue-wait and pre-POST safety
@@ -316,6 +323,77 @@ test('adapter - constructor strictness', async (t) => {
     assert.equal(decision.safe, false);
     assert.equal(decision.reason, EDITOR_SAFETY_NOT_CERTIFIABLE);
   });
+
+  await t.test('R3-F1: getPrototypeOf trap on options throws controlled, non-leaking error', () => {
+    const options = new Proxy({ probes: {} }, {
+      getPrototypeOf() {
+        throw new Error(SECRET);
+      },
+    });
+    assert.throws(
+      () => createSillyTavernEditorSafetyAdapter(options),
+      (err) => err instanceof Error && !String(err.message).includes(SECRET),
+    );
+  });
+
+  await t.test('R3-F1: throwing accessor on options.probes throws controlled, non-leaking error', () => {
+    const options = {};
+    Object.defineProperty(options, 'probes', {
+      get() {
+        throw new Error(SECRET);
+      },
+      enumerable: true,
+      configurable: true,
+    });
+    assert.throws(
+      () => createSillyTavernEditorSafetyAdapter(options),
+      (err) => err instanceof Error && !String(err.message).includes(SECRET),
+    );
+  });
+
+  await t.test('R3-F1: getPrototypeOf trap on probes throws controlled, non-leaking error', () => {
+    const probes = new Proxy(makeProbes(), {
+      getPrototypeOf() {
+        throw new Error(SECRET);
+      },
+    });
+    assert.throws(
+      () => createSillyTavernEditorSafetyAdapter({ probes }),
+      (err) => err instanceof Error && !String(err.message).includes(SECRET),
+    );
+  });
+
+  await t.test('R3-F1: hostile descriptor trap on options.probes lookup is contained', () => {
+    // A proxy getOwnPropertyDescriptor trap that throws must not leak.
+    const options = new Proxy({ probes: makeProbes() }, {
+      getOwnPropertyDescriptor(target, key) {
+        if (key === 'probes') {
+          throw new Error(SECRET);
+        }
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      },
+    });
+    assert.throws(
+      () => createSillyTavernEditorSafetyAdapter(options),
+      (err) => err instanceof Error && !String(err.message).includes(SECRET),
+    );
+  });
+
+  await t.test('R3-F1: probes accessor returning a value is still usable', () => {
+    // Non-throwing accessor delivering the probes object must construct.
+    const options = {};
+    Object.defineProperty(options, 'probes', {
+      get() {
+        return makeProbes();
+      },
+      enumerable: true,
+      configurable: true,
+    });
+    const adapter = createSillyTavernEditorSafetyAdapter(options);
+    const decision = adapter.checkEditorSafety({ kind: 'installed-card', avatar: 'Target.png' });
+    assert.equal(decision.safe, false);
+    assert.equal(decision.reason, EDITOR_SAFETY_NOT_CERTIFIABLE);
+  });
 });
 
 test('adapter - guarded probe evaluation', async (t) => {
@@ -556,9 +634,11 @@ test('adapter - R1-F5 robustness', async (t) => {
 
 // R2-F2 regressions 4–6 (rejected ordinary native Promise, async rejecting
 // probe, arbitrary thenable) are the R1-F5 tests above; they exercise the
-// new intrinsic-then suppression mechanism unchanged. The suite below adds
-// the spoofing and hostile-receiver cases the old toStringTag-based check
-// could not survive.
+// suppression mechanism unchanged. The suite below covers the spoofing and
+// hostile-receiver cases, and the R3-F2 support boundary: only ordinary
+// native promises of this realm are suppressed; subclasses, custom species,
+// cross-realm values, proxies, and receivers with an own "constructor" are
+// skipped by design and left to the host.
 test('adapter - R2-F2 promise suppression hardening', async (t) => {
   await t.test('R2-F2: fake Promise spoofing Symbol.toStringTag never has .then invoked', async () => {
     const rejections = [];
@@ -639,23 +719,90 @@ test('adapter - R2-F2 promise suppression hardening', async (t) => {
     }
   });
 
-  await t.test('R2-F2: promise subclass rejection is also suppressed', async () => {
-    const rejections = [];
-    const onUnhandled = (reason) => rejections.push(reason);
-    process.on('unhandledRejection', onUnhandled);
-    try {
-      class SubPromise extends Promise {}
-      const p = SubPromise.reject(new Error('subclass rejection'));
-      const probes = makeProbes();
-      probes.externalWriterSuspected = () => p;
-      const adapter = createSillyTavernEditorSafetyAdapter({ probes });
-      const decision = adapter.checkEditorSafety({ kind: 'installed-card', avatar: 'Target.png' });
-      assert.equal(decision.safe, false);
-      await new Promise((resolve) => setTimeout(resolve, 25));
-      assert.equal(rejections.length, 0, 'genuine subclass rejections must be suppressed too');
-    } finally {
-      process.off('unhandledRejection', onUnhandled);
+  await t.test('R3-F2: subclass rejection is deliberately NOT suppressed (documented limit)', async () => {
+    // The subclass receiver is outside the ordinary-promise support
+    // boundary: suppressing it would consult its constructor/species
+    // chain. The adapter must skip it (species hooks never run) while
+    // still refusing the observation. The rejection is the host's
+    // responsibility; this test cleans it up synchronously so no
+    // unhandled rejection occurs during the run.
+    let speciesRuns = 0;
+    class SpeciesCounting extends Promise {
+      static get [Symbol.species]() {
+        speciesRuns++;
+        return Promise;
+      }
     }
+    const p = SpeciesCounting.reject(new Error('subclass rejection'));
+    const probes = makeProbes();
+    probes.externalWriterSuspected = () => p;
+    const adapter = createSillyTavernEditorSafetyAdapter({ probes });
+    const decision = adapter.checkEditorSafety({ kind: 'installed-card', avatar: 'Target.png' });
+    assert.equal(decision.safe, false);
+    assert.equal(decision.reason, EDITOR_SAFETY_NOT_CERTIFIABLE);
+    assert.deepEqual(decision.details.observedReasons, [EDITOR_SAFETY_REASONS.UNKNOWN_OBSERVATION]);
+    // No suppression attempt: the adapter never consulted the species chain.
+    assert.equal(speciesRuns, 0, 'species hooks must never run for a skipped receiver');
+    // Test-owned cleanup in the same tick: no unhandled rejection event.
+    p.catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.ok(speciesRuns >= 0); // cleanup may consult species; harmless
+  });
+
+  await t.test('R3-F2: hostile own constructor getter is never executed', async () => {
+    const p = Promise.reject(new Error('booby-trapped rejection'));
+    let getterRuns = 0;
+    Object.defineProperty(p, 'constructor', {
+      get() {
+        getterRuns++;
+        throw new Error(SECRET);
+      },
+      configurable: true,
+    });
+    const probes = makeProbes();
+    probes.saveScheduled = () => p;
+    const adapter = createSillyTavernEditorSafetyAdapter({ probes });
+    const decision = adapter.checkEditorSafety({ kind: 'installed-card', avatar: 'Target.png' });
+    assert.equal(decision.safe, false);
+    assert.deepEqual(decision.details.observedReasons, [EDITOR_SAFETY_REASONS.UNKNOWN_OBSERVATION]);
+    assert.equal(JSON.stringify(decision).includes(SECRET), false, 'the getter error must not leak');
+    // The receiver is outside the support boundary (own "constructor"), so
+    // the getter must never have executed during the adapter call.
+    assert.equal(getterRuns, 0, 'the hostile constructor getter must never execute');
+    // Test-owned cleanup: remove the trap, then settle the rejection here.
+    delete p.constructor;
+    p.catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(getterRuns, 0, 'cleanup must not re-arm the trap either');
+  });
+
+  await t.test('R3-F2: custom species getter on a subclass is never consulted by the adapter', async () => {
+    let armed = true;
+    let speciesRuns = 0;
+    class HostileSpecies extends Promise {
+      static get [Symbol.species]() {
+        speciesRuns++;
+        if (armed) {
+          throw new Error(SECRET);
+        }
+        return Promise;
+      }
+    }
+    const p = HostileSpecies.reject(new Error('species rejection'));
+    const probes = makeProbes();
+    probes.editorVisible = () => p;
+    const adapter = createSillyTavernEditorSafetyAdapter({ probes });
+    const decision = adapter.checkEditorSafety({ kind: 'installed-card', avatar: 'Target.png' });
+    assert.equal(decision.safe, false);
+    assert.equal(JSON.stringify(decision).includes(SECRET), false);
+    assert.equal(speciesRuns, 0, 'the hostile species getter must never be consulted by the adapter');
+
+    // Test-owned cleanup: disarm the trap, then attach no-op handlers via
+    // the intrinsic then. Only this cleanup may consult the species chain.
+    armed = false;
+    Promise.prototype.then.call(p, () => {}, () => {});
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(speciesRuns, 1, 'only the test-owned cleanup consulted species (disarmed)');
   });
 });
 
