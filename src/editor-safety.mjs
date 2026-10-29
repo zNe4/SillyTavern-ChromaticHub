@@ -1,9 +1,22 @@
 /**
- * SillyTavern-ChromaticHub: Pure Editor-Safety Evaluator (H01-B3-B)
+ * SillyTavern-ChromaticHub: Pure Editor-Safety Evaluator (H01-B3-B / R1)
  *
  * Evaluates a strict, explicit set of editor-safety observations and decides
  * whether a card mutation could proceed. This module is pure: no DOM, no
  * network, no timers, no imports.
+ *
+ * R1 corrections enforced here:
+ * - Own-property validation: inherited values never count as observations
+ *   (envelope, owner, and nested status/value records are all own-checked).
+ * - Strict shapes: unexpected own properties — including non-enumerable and
+ *   symbol properties — are rejected on the envelope, owner, and records.
+ * - Controlled diagnostics: error messages never interpolate unknown
+ *   property names or untrusted values.
+ * - Approved precedence: envelope → availability/types → editorVisible →
+ *   editorDirty → saveScheduled → saveInFlight → hiddenJsonConflicts →
+ *   activeCardMismatch → externalWriterSuspected → safe.
+ * - Owner validation matches the mutation controller's installed-card
+ *   locator restrictions (including "." and ".." avatar stems).
  *
  * `safe: true` is a statement about the supplied synthetic facts ONLY.
  * Nothing here claims that any runtime can produce such facts, and no
@@ -28,6 +41,7 @@ export const EDITOR_SAFETY_REASONS = Object.freeze({
   EXTERNAL_WRITER_SUSPECTED: 'EXTERNAL_WRITER_SUSPECTED',
 });
 
+// Evaluation order for the observation fields.
 const OBSERVATION_FIELDS = Object.freeze([
   'editorVisible',
   'editorDirty',
@@ -38,24 +52,14 @@ const OBSERVATION_FIELDS = Object.freeze([
   'externalWriterSuspected',
 ]);
 
-// Danger precedence order follows OBSERVATION_FIELDS order exactly.
-const BOOLEAN_FIELDS = Object.freeze([
-  'editorVisible',
-  'editorDirty',
-  'saveScheduled',
-  'saveInFlight',
-  'hiddenJsonConflicts',
-  'externalWriterSuspected',
+const ENVELOPE_ALLOWED_KEYS = Object.freeze([
+  'schemaVersion',
+  'owner',
+  ...OBSERVATION_FIELDS,
 ]);
 
-const DANGER_REASON_BY_FIELD = Object.freeze({
-  editorVisible: EDITOR_SAFETY_REASONS.EDITOR_OPEN,
-  editorDirty: EDITOR_SAFETY_REASONS.EDITOR_DIRTY,
-  saveScheduled: EDITOR_SAFETY_REASONS.SAVE_PENDING,
-  saveInFlight: EDITOR_SAFETY_REASONS.SAVE_IN_FLIGHT,
-  hiddenJsonConflicts: EDITOR_SAFETY_REASONS.HIDDEN_JSON_STALE,
-  externalWriterSuspected: EDITOR_SAFETY_REASONS.EXTERNAL_WRITER_SUSPECTED,
-});
+const OWNER_ALLOWED_KEYS = Object.freeze(['kind', 'avatar']);
+const RECORD_ALLOWED_KEYS = Object.freeze(['status', 'value']);
 
 function isPlainObject(val) {
   if (val === null || typeof val !== 'object' || Array.isArray(val)) {
@@ -69,9 +73,15 @@ function isThenable(val) {
   return (
     val !== null &&
     (typeof val === 'object' || typeof val === 'function') &&
-    typeof val.then === 'function'
+    typeof safeGet(val, 'then') === 'function'
   );
 }
+
+// Unique sentinel for property access that threw (hostile getter or proxy
+// trap). Identity-compared only; never shape-inspected, so it can never be
+// mistaken for a valid envelope, owner, or observation record.
+const ACCESS_THROWING = Symbol('editorSafetyAccessThrowing');
+const ACCESS_THREW = Object.freeze({ [ACCESS_THROWING]: true });
 
 function safeHasOwn(obj, key) {
   try {
@@ -85,22 +95,76 @@ function safeGet(obj, key) {
   try {
     return obj[key];
   } catch (_err) {
-    return { __throwingGetter: true };
+    return ACCESS_THREW;
   }
 }
 
-function isValidAvatarString(avatar) {
-  return (
-    typeof avatar === 'string' &&
-    avatar.trim().length > 0 &&
-    !avatar.includes('/') &&
-    !avatar.includes('\\') &&
-    !CONTROL_CHARS_REGEX.test(avatar) &&
-    PNG_EXTENSION_REGEX.test(avatar) &&
-    avatar.slice(0, -4).trim().length > 0
-  );
+function accessThrew(val) {
+  return val === ACCESS_THREW;
 }
 
+/**
+ * Own-property key inventory (string names and symbols). Returns null when
+ * inspection throws (e.g., a hostile proxy trap), which callers treat as a
+ * strict-shape failure.
+ */
+function safeOwnKeysAll(obj) {
+  try {
+    return [...Object.getOwnPropertyNames(obj), ...Object.getOwnPropertySymbols(obj)];
+  } catch (_err) {
+    return null;
+  }
+}
+
+/**
+ * True only when every own key is a permitted string name. Any symbol key
+ * or unexpected name (enumerable or not) fails the strict shape.
+ */
+function keysAreAllowed(keys, allowed) {
+  if (keys === null) {
+    return false;
+  }
+  for (const key of keys) {
+    if (typeof key === 'symbol') {
+      return false;
+    }
+    if (!allowed.includes(key)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Installed-card locator restrictions, matching the mutation controller's
+ * validateOwner contract exactly (including "." and ".." avatar stems).
+ */
+function isValidOwnerAvatar(avatar) {
+  if (typeof avatar !== 'string') {
+    return false;
+  }
+  if (avatar.trim().length === 0) {
+    return false;
+  }
+  if (avatar.includes('/') || avatar.includes('\\')) {
+    return false;
+  }
+  if (CONTROL_CHARS_REGEX.test(avatar)) {
+    return false;
+  }
+  if (!PNG_EXTENSION_REGEX.test(avatar)) {
+    return false;
+  }
+  const stem = avatar.slice(0, -4);
+  if (stem.length === 0 || stem === '.' || stem === '..' || stem.trim().length === 0) {
+    return false;
+  }
+  return true;
+}
+
+// Controlled diagnostics: message strings are fixed or interpolate only
+// internal field names drawn from OBSERVATION_FIELDS. Unknown property
+// names and untrusted values are never interpolated.
 function invalid(message, field) {
   const result = {
     safe: false,
@@ -135,7 +199,7 @@ function danger(reason, field) {
  * Validates the observations envelope and evaluates the editor-safety decision.
  *
  * @param {object} observations - Strict observation envelope (schemaVersion: 1,
- *   owner echo, and every required observation field).
+ *   owner echo, and every required observation field; own properties only).
  * @returns {object} Frozen decision: { safe: true } only when every synthetic
  *   observation is complete, valid, and clean; otherwise { safe: false, ... }.
  */
@@ -148,6 +212,7 @@ export function evaluateEditorSafety(observations) {
 }
 
 function evaluateEditorSafetyInner(observations) {
+  // Phase 1: envelope validity.
   if (!isPlainObject(observations) || safeHasOwn(observations, '__proto__')) {
     return invalid('observations must be a plain object');
   }
@@ -156,31 +221,49 @@ function evaluateEditorSafetyInner(observations) {
     return invalid('observations must not contain a posture field');
   }
 
-  if (safeGet(observations, 'schemaVersion') !== 1) {
+  if (!keysAreAllowed(safeOwnKeysAll(observations), ENVELOPE_ALLOWED_KEYS)) {
+    return invalid('Observation envelope contains an unexpected own property');
+  }
+
+  if (!safeHasOwn(observations, 'schemaVersion')) {
+    return invalid('observations.schemaVersion must be exactly 1');
+  }
+  const schemaVersion = safeGet(observations, 'schemaVersion');
+  if (accessThrew(schemaVersion) || schemaVersion !== 1) {
     return invalid('observations.schemaVersion must be exactly 1');
   }
 
-  const owner = safeGet(observations, 'owner');
-  if (!isPlainObject(owner) || safeHasOwn(owner, '__proto__')) {
+  if (!safeHasOwn(observations, 'owner')) {
     return invalid('observations.owner must be a plain object');
   }
-  if (safeGet(owner, 'kind') !== 'installed-card') {
+  const owner = safeGet(observations, 'owner');
+  if (
+    accessThrew(owner) ||
+    !isPlainObject(owner) ||
+    safeHasOwn(owner, '__proto__')
+  ) {
+    return invalid('observations.owner must be a plain object');
+  }
+  if (!keysAreAllowed(safeOwnKeysAll(owner), OWNER_ALLOWED_KEYS)) {
+    return invalid('Observation owner contains an unexpected own property');
+  }
+  if (!safeHasOwn(owner, 'kind')) {
     return invalid('observations.owner.kind must be "installed-card"');
   }
+  const ownerKind = safeGet(owner, 'kind');
+  if (accessThrew(ownerKind) || ownerKind !== 'installed-card') {
+    return invalid('observations.owner.kind must be "installed-card"');
+  }
+  if (!safeHasOwn(owner, 'avatar')) {
+    return invalid('observations.owner.avatar must be a valid installed-card avatar');
+  }
   const ownerAvatar = safeGet(owner, 'avatar');
-  if (!isValidAvatarString(ownerAvatar)) {
-    return invalid('observations.owner.avatar must be a valid PNG card avatar');
+  if (accessThrew(ownerAvatar) || !isValidOwnerAvatar(ownerAvatar)) {
+    return invalid('observations.owner.avatar must be a valid installed-card avatar');
   }
 
-  for (const key of Object.keys(observations)) {
-    if (key !== 'schemaVersion' && key !== 'owner' && !OBSERVATION_FIELDS.includes(key)) {
-      return invalid(`Unknown observation key: ${JSON.stringify(key)}`);
-    }
-  }
-
+  // Phase 2: observation availability and types, in fixed field order.
   const values = {};
-
-  // Availability & type validation in fixed field order.
   for (const field of OBSERVATION_FIELDS) {
     if (!safeHasOwn(observations, field)) {
       return fieldFailure(
@@ -190,15 +273,20 @@ function evaluateEditorSafetyInner(observations) {
       );
     }
 
-    const observation = safeGet(observations, field);
-    if (observation === null || typeof observation !== 'object' || isThenable(observation)) {
+    const record = safeGet(observations, field);
+    if (accessThrew(record)) {
       return fieldFailure(
         EDITOR_SAFETY_REASONS.UNKNOWN_OBSERVATION,
         field,
-        `Observation must be a plain object: ${field}`,
+        `Observation could not be read: ${field}`,
       );
     }
-    if (!isPlainObject(observation)) {
+    if (
+      record === null ||
+      typeof record !== 'object' ||
+      isThenable(record) ||
+      !isPlainObject(record)
+    ) {
       return fieldFailure(
         EDITOR_SAFETY_REASONS.UNKNOWN_OBSERVATION,
         field,
@@ -206,7 +294,27 @@ function evaluateEditorSafetyInner(observations) {
       );
     }
 
-    const status = safeGet(observation, 'status');
+    // Strict record shape: only own "status" and "value" are permitted.
+    // Inherited status/value (prototype lookup) cannot contribute.
+    if (!keysAreAllowed(safeOwnKeysAll(record), RECORD_ALLOWED_KEYS)) {
+      return invalid('Observation record contains an unexpected own property', field);
+    }
+
+    if (!safeHasOwn(record, 'status')) {
+      return fieldFailure(
+        EDITOR_SAFETY_REASONS.MISSING_OBSERVATION,
+        field,
+        `Observation status missing: ${field}`,
+      );
+    }
+    const status = safeGet(record, 'status');
+    if (accessThrew(status)) {
+      return fieldFailure(
+        EDITOR_SAFETY_REASONS.UNKNOWN_OBSERVATION,
+        field,
+        `Observation status could not be read: ${field}`,
+      );
+    }
     if (status === 'missing') {
       return fieldFailure(
         EDITOR_SAFETY_REASONS.MISSING_OBSERVATION,
@@ -222,7 +330,21 @@ function evaluateEditorSafetyInner(observations) {
       );
     }
 
-    const value = safeGet(observation, 'value');
+    if (!safeHasOwn(record, 'value')) {
+      return fieldFailure(
+        EDITOR_SAFETY_REASONS.UNKNOWN_OBSERVATION,
+        field,
+        `Observation value missing: ${field}`,
+      );
+    }
+    const value = safeGet(record, 'value');
+    if (accessThrew(value)) {
+      return fieldFailure(
+        EDITOR_SAFETY_REASONS.UNKNOWN_OBSERVATION,
+        field,
+        `Observation value could not be read: ${field}`,
+      );
+    }
     if (isThenable(value)) {
       return fieldFailure(
         EDITOR_SAFETY_REASONS.UNKNOWN_OBSERVATION,
@@ -239,26 +361,33 @@ function evaluateEditorSafetyInner(observations) {
           'activeCardAvatar value must be a string or null',
         );
       }
-    } else {
-      if (typeof value !== 'boolean') {
-        return fieldFailure(
-          EDITOR_SAFETY_REASONS.UNKNOWN_OBSERVATION,
-          field,
-          `Observation value must be a real boolean: ${field}`,
-        );
-      }
+    } else if (typeof value !== 'boolean') {
+      return fieldFailure(
+        EDITOR_SAFETY_REASONS.UNKNOWN_OBSERVATION,
+        field,
+        `Observation value must be a real boolean: ${field}`,
+      );
     }
 
     values[field] = value;
   }
 
-  // Danger evaluation in fixed precedence order.
-  for (const field of BOOLEAN_FIELDS) {
-    if (values[field] === true) {
-      return danger(DANGER_REASON_BY_FIELD[field], field);
-    }
+  // Phases 3–9: approved danger precedence.
+  if (values.editorVisible === true) {
+    return danger(EDITOR_SAFETY_REASONS.EDITOR_OPEN, 'editorVisible');
   }
-
+  if (values.editorDirty === true) {
+    return danger(EDITOR_SAFETY_REASONS.EDITOR_DIRTY, 'editorDirty');
+  }
+  if (values.saveScheduled === true) {
+    return danger(EDITOR_SAFETY_REASONS.SAVE_PENDING, 'saveScheduled');
+  }
+  if (values.saveInFlight === true) {
+    return danger(EDITOR_SAFETY_REASONS.SAVE_IN_FLIGHT, 'saveInFlight');
+  }
+  if (values.hiddenJsonConflicts === true) {
+    return danger(EDITOR_SAFETY_REASONS.HIDDEN_JSON_STALE, 'hiddenJsonConflicts');
+  }
   if (values.activeCardAvatar === null || values.activeCardAvatar !== ownerAvatar) {
     return Object.freeze({
       safe: false,
@@ -267,6 +396,10 @@ function evaluateEditorSafetyInner(observations) {
       details: Object.freeze({ field: 'activeCardAvatar' }),
     });
   }
+  if (values.externalWriterSuspected === true) {
+    return danger(EDITOR_SAFETY_REASONS.EXTERNAL_WRITER_SUSPECTED, 'externalWriterSuspected');
+  }
 
+  // Phase 10: complete and clean synthetic observations permit safe: true.
   return Object.freeze({ safe: true });
 }

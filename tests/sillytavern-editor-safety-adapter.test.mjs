@@ -1,10 +1,14 @@
 /**
- * SillyTavern-ChromaticHub: Deny-Only Editor-Safety Adapter Tests (H01-B3-B)
+ * SillyTavern-ChromaticHub: Deny-Only Editor-Safety Adapter Tests (H01-B3-B / R1)
  *
  * Synthetic unit tests covering:
  * - Exhaustive deny-only boolean grid (all 64 combinations + avatar cases)
  * - Constructor strictness (unknown options, the former `posture`, probe names)
  * - Guarded probe access/invocation, throwing probes, thenable/async returns
+ * - R1-F2: constructor diagnostic privacy (secret probe/option names and
+ *   symbol keys never appear in thrown messages)
+ * - R1-F5: frozen adapter object; rejected native Promise probes create no
+ *   unhandled rejection; arbitrary thenable `.then` is never invoked
  * - Invalid owner rejection without probe consultation
  * - Fresh probe evaluation per invocation; sanitized diagnostics; immutability
  * - Controller composition: checkpoint counts, queue-wait and pre-POST safety
@@ -49,20 +53,27 @@ function makeProbes(overrides = {}) {
   };
   const values = { ...base, ...overrides };
   const probes = {};
-  let calls = 0;
   for (const name of Object.keys(values)) {
-    probes[name] = () => {
+    probes[name] = () => values[name];
+  }
+  return probes;
+}
+
+/**
+ * Wraps probes with an invocation counter that lives OUTSIDE the probes
+ * object (the adapter strictly rejects any extra own property on probes).
+ */
+function counting(probes) {
+  let calls = 0;
+  const wrapped = {};
+  for (const name of Object.keys(probes)) {
+    const inner = probes[name];
+    wrapped[name] = (...args) => {
       calls++;
-      return values[name];
+      return inner(...args);
     };
   }
-  // Non-enumerable: invisible to the adapter's probe-name validation and
-  // iteration; test-only invocation counter.
-  Object.defineProperty(probes, '__callCount', {
-    value: () => calls,
-    enumerable: false,
-  });
-  return probes;
+  return { probes: wrapped, getCallCount: () => calls };
 }
 
 /**
@@ -210,6 +221,46 @@ test('adapter - constructor strictness', async (t) => {
     assert.throws(() => createSillyTavernEditorSafetyAdapter({ probes: null }));
     assert.throws(() => createSillyTavernEditorSafetyAdapter({ probes: 'probes' }));
   });
+
+  await t.test('R1-F2: secret-bearing probe name throws without leaking the secret', () => {
+    assert.throws(
+      () =>
+        createSillyTavernEditorSafetyAdapter({
+          probes: { ...makeProbes(), [SECRET]: () => false },
+        }),
+      (err) => !String(err.message).includes(SECRET),
+    );
+  });
+
+  await t.test('R1-F2: secret-bearing option key throws without leaking the secret', () => {
+    assert.throws(
+      () => createSillyTavernEditorSafetyAdapter({ probes: makeProbes(), [SECRET]: 1 }),
+      (err) => !String(err.message).includes(SECRET),
+    );
+  });
+
+  await t.test('R1-F2: symbol-keyed probe property throws', () => {
+    assert.throws(() =>
+      createSillyTavernEditorSafetyAdapter({
+        probes: { ...makeProbes(), [Symbol(SECRET)]: () => false },
+      }),
+    );
+    assert.throws(() =>
+      createSillyTavernEditorSafetyAdapter({
+        probes: { ...makeProbes(), [Symbol('extra')]: () => false },
+      }),
+    );
+  });
+
+  await t.test('R1-F2: non-enumerable extra probe property throws', () => {
+    const probes = makeProbes();
+    Object.defineProperty(probes, 'hiddenExtra', {
+      value: () => false,
+      enumerable: false,
+      configurable: true,
+    });
+    assert.throws(() => createSillyTavernEditorSafetyAdapter({ probes }));
+  });
 });
 
 test('adapter - guarded probe evaluation', async (t) => {
@@ -279,7 +330,7 @@ test('adapter - guarded probe evaluation', async (t) => {
   });
 
   await t.test('B5: invalid owner rejects without consulting probes', () => {
-    const probes = makeProbes();
+    const { probes, getCallCount } = counting(makeProbes());
     const adapter = createSillyTavernEditorSafetyAdapter({ probes });
     const badOwners = [
       null,
@@ -289,24 +340,26 @@ test('adapter - guarded probe evaluation', async (t) => {
       { kind: 'installed-card', avatar: '../up.png' },
       { kind: 'installed-card', avatar: 'card.jpg' },
       { kind: 'installed-card', avatar: 42 },
+      { kind: 'installed-card', avatar: '..png' },
+      { kind: 'installed-card', avatar: '.png' },
     ];
     for (const owner of badOwners) {
-      const before = probes.__callCount();
+      const before = getCallCount();
       const decision = adapter.checkEditorSafety(owner);
       assert.equal(decision.safe, false, `owner ${JSON.stringify(owner)} must deny`);
       assert.equal(decision.reason, EDITOR_SAFETY_NOT_CERTIFIABLE);
-      assert.equal(probes.__callCount(), before, 'probes must not be consulted for invalid owners');
+      assert.equal(getCallCount(), before, 'probes must not be consulted for invalid owners');
     }
   });
 
   await t.test('B6: probes are re-invoked fresh on every call (no caching)', () => {
-    const probes = makeProbes();
+    const { probes, getCallCount } = counting(makeProbes());
     const adapter = createSillyTavernEditorSafetyAdapter({ probes });
     adapter.checkEditorSafety({ kind: 'installed-card', avatar: 'Target.png' });
-    const afterFirst = probes.__callCount();
+    const afterFirst = getCallCount();
     assert.equal(afterFirst, 7);
     adapter.checkEditorSafety({ kind: 'installed-card', avatar: 'Target.png' });
-    assert.equal(probes.__callCount(), afterFirst + 7);
+    assert.equal(getCallCount(), afterFirst + 7);
   });
 
   await t.test('B7: hostile probes cannot leak secrets, exceptions, or DOM strings', () => {
@@ -321,6 +374,128 @@ test('adapter - guarded probe evaluation', async (t) => {
     assert.equal(serialized.includes(SECRET), false);
     assert.equal(serialized.includes('<div>'), false);
     assert.equal(decision.safe, false);
+  });
+});
+
+test('adapter - R1-F5 robustness', async (t) => {
+  await t.test('R1-F5: returned adapter object is frozen', () => {
+    const adapter = createSillyTavernEditorSafetyAdapter({ probes: makeProbes() });
+    assert.equal(Object.isFrozen(adapter), true);
+    assert.throws(() => {
+      'use strict';
+      adapter.checkEditorSafety = () => ({ safe: true });
+    });
+    assert.throws(() => {
+      'use strict';
+      adapter.extra = 1;
+    });
+    // The original verdict function is untouched by the failed assignment.
+    const decision = adapter.checkEditorSafety({ kind: 'installed-card', avatar: 'Target.png' });
+    assert.equal(decision.safe, false);
+    assert.equal(decision.reason, EDITOR_SAFETY_NOT_CERTIFIABLE);
+  });
+
+  await t.test('R1-F5: rejected native Promise probe creates no unhandled rejection', async () => {
+    const rejections = [];
+    const onUnhandled = (reason) => rejections.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const probes = makeProbes();
+      probes.editorVisible = () => Promise.reject(new Error('probe rejected'));
+      const adapter = createSillyTavernEditorSafetyAdapter({ probes });
+      const decision = adapter.checkEditorSafety({ kind: 'installed-card', avatar: 'Target.png' });
+      assert.equal(decision.safe, false);
+      assert.equal(decision.reason, EDITOR_SAFETY_NOT_CERTIFIABLE);
+      assert.deepEqual(decision.details.observedReasons, [EDITOR_SAFETY_REASONS.UNKNOWN_OBSERVATION]);
+
+      // Give the microtask/macrotask queue a chance to surface an unhandled
+      // rejection; the adapter's no-op catch must have suppressed it.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.equal(rejections.length, 0, 'no unhandled rejection may escape the adapter');
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
+  await t.test('R1-F5: async rejected probe creates no unhandled rejection', async () => {
+    const rejections = [];
+    const onUnhandled = (reason) => rejections.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const probes = makeProbes();
+      probes.saveScheduled = async () => {
+        throw new Error('async probe rejected');
+      };
+      const adapter = createSillyTavernEditorSafetyAdapter({ probes });
+      const decision = adapter.checkEditorSafety({ kind: 'installed-card', avatar: 'Target.png' });
+      assert.equal(decision.safe, false);
+      assert.deepEqual(decision.details.observedReasons, [EDITOR_SAFETY_REASONS.UNKNOWN_OBSERVATION]);
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.equal(rejections.length, 0, 'async probe rejection must be suppressed');
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
+  await t.test('R1-F5: arbitrary thenable .then is never invoked', () => {
+    const probes = makeProbes();
+    let thenCalled = 0;
+    let catchAttached = false;
+    const thenable = {
+      then(onFulfilled, onRejected) {
+        thenCalled++;
+        catchAttached = typeof onRejected === 'function';
+        return thenable;
+      },
+    };
+    probes.externalWriterSuspected = () => thenable;
+    const adapter = createSillyTavernEditorSafetyAdapter({ probes });
+    const decision = adapter.checkEditorSafety({ kind: 'installed-card', avatar: 'Target.png' });
+    assert.equal(decision.safe, false);
+    assert.equal(decision.reason, EDITOR_SAFETY_NOT_CERTIFIABLE);
+    assert.deepEqual(decision.details.observedReasons, [EDITOR_SAFETY_REASONS.UNKNOWN_OBSERVATION]);
+    assert.equal(thenCalled, 0, 'the adapter must never invoke arbitrary thenable behavior');
+    assert.equal(catchAttached, false);
+  });
+
+  await t.test('R1-F5: impostor thenable with hostile .then getter is contained', () => {
+    const probes = makeProbes();
+    probes.hiddenJsonConflicts = () => {
+      const hostile = {};
+      Object.defineProperty(hostile, 'then', {
+        get() {
+          throw new Error(SECRET);
+        },
+        configurable: true,
+      });
+      return hostile;
+    };
+    const adapter = createSillyTavernEditorSafetyAdapter({ probes });
+    const decision = adapter.checkEditorSafety({ kind: 'installed-card', avatar: 'Target.png' });
+    assert.equal(decision.safe, false);
+    assert.equal(JSON.stringify(decision).includes(SECRET), false);
+    assert.deepEqual(decision.details.observedReasons, [EDITOR_SAFETY_REASONS.UNKNOWN_OBSERVATION]);
+  });
+
+  await t.test('R1-F5: resolved native Promise probe is still refused, never awaited', async () => {
+    const probes = makeProbes();
+    let observedResolution = null;
+    probes.activeCardAvatar = () =>
+      Promise.resolve('Target.png').then((v) => {
+        observedResolution = v;
+        return v;
+      });
+    const adapter = createSillyTavernEditorSafetyAdapter({ probes });
+    const decision = adapter.checkEditorSafety({ kind: 'installed-card', avatar: 'Target.png' });
+    assert.equal(decision.safe, false);
+    assert.deepEqual(decision.details.observedReasons, [EDITOR_SAFETY_REASONS.UNKNOWN_OBSERVATION]);
+    // Let the promise settle; its resolution must never become an observation.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.notEqual(observedResolution, null); // the promise itself did settle...
+    const again = adapter.checkEditorSafety({ kind: 'installed-card', avatar: 'Target.png' });
+    assert.equal(again.safe, false, '...but the adapter still refuses on every call');
+    assert.equal(again.reason, EDITOR_SAFETY_NOT_CERTIFIABLE);
   });
 });
 
