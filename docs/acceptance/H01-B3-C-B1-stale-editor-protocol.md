@@ -197,6 +197,27 @@ The owner clarified that `/home/zzzne4/SillyTavern` is **exclusively a testing i
 
 **Important scope distinction:** owner accepts writes into this *test-only SillyTavern installation*, not into production ChromaticHub runtime logic or arbitrary user directories. The pure H01-B3-B editor-safety adapter stays unconditionally deny-only and the experiment cannot certify quiescence. This direct approach is a newly selected execution route; the old B1 one-shot script markers are not recycled.
 
+### B1-DIRECT owner-native disposable card baseline (2026-10-29)
+
+The owner confirmed the regular test installation is at expected HEAD `4ceca42ba2bef15f7c0f9f1040368260c8588b92`, with pre-existing `package.json` and `package-lock.json` modifications untouched, and `data/default-user/settings.json` present. An initial inventory found no new card, then the owner **manually created** exactly one fixture-external test card `data/default-user/characters/CHH01B3C_StaleEditor_LocalTest.png`. The prior three unrelated test-installation cards remain out of scope.
+
+The owner ran the standalone *read-only metadata check and backup creation* and reported:
+
+```text
+NAME=PASS
+DESCRIPTION=PASS
+FIRST_MESSAGE=PASS
+REGISTRY_ABSENT=PASS
+EVIDENCE_DIR=/home/zzzne4/ChromaticHub-B1-direct._xlayxdb
+CARD_SHA256=6593f9ff1320afff74a0b434ab92b6deb8701addc32a55afff8a723ad2e92aab
+BACKUP=PASS
+BASELINE=PASS
+```
+
+**B1-DIRECT baseline accepted on owner evidence.** Metadata expectations: description `This is a test chat for ChromaticHub!` and first message `Hi. I'm a test character. Please tell me what I should do now.` The backup `pre-merge.png` is outside the SillyTavern checkout and read-only; keep it unchanged. No API merge or stale editor Save has occurred.
+
+**Next read-only gate:** open the exact target card's editor without modifying fields; set Firefox Network log preservation; compare SHA-256 of the original hidden `#character_json_data` to the **ccv3** (preferred by the pinned `character-card-parser.js`) or `chara` JSON text extracted from the preserved PNG, alongside the selected `avatar_url`, action type and absent `chromaticHub`. The earlier baseline script validated `chara` but did not establish the hidden string's equality. Stop if a native `/api/characters/edit` occurs while opening the editor. **Do not submit the B1 merge until these checks pass.**
+
 ## 7. Review outcome
 
 **The owner elected to use the regular testing-only SillyTavern checkout for the next B1 attempt.** The original B1-R1 and planned B1-R2 fixture scripts remain retired; their evidence must be preserved. The next test must target one newly created disposable card, have a separate verified backup and only one merge plus one manual editor Save. No native overwrite outcome exists yet. H01-B3-B remains deny-only.
