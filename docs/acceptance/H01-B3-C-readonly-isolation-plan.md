@@ -113,11 +113,47 @@ The reviewed script archives the **committed** source SHA (excluding dirty owner
 - Confirm the intended standalone launch entrypoint and whether any global-mode startup is activated; the current checked `config.yaml` alone does **not** establish actual runtime options.
 - Confirm that a future disposable Firefox profile is acceptable, and that no provider keys or production cards will be copied.
 
-## C. C-P2 — read-only instance observation (future approval required)
+## C. C-P2 — isolated startup and read-only observation (owner-reported PASS)
 
 After owner approval of the isolation design only: inspect effective roots, server revision, data paths, UI profile separation, single-tab status, extension load set, read-only `/api/characters/get` responses, and resolved card owners. Ensure there is no hidden or production data root, symbolic link, other writer or accidental generation route. No modifications to card data, chat metadata or settings.
 
 If any boundary fails, shut down the disposable instance through the approved procedure, retain evidence and **do not attempt native mutation**.
+
+### C-P2 — owner-native isolated startup receipt (2026-10-28)
+
+After explicitly authorizing **C-P2 startup and read-only verification**, the owner executed the one-shot `chromatichub_h01b3c_p2_verify.py` script against the existing C-P1-A fixture and supplied:
+
+```text
+C_P2_PREFLIGHT=PASS
+SOURCE_ARCHIVE_FILES=1095
+POST_COPY_SYMLINKS=40
+PORT_PRECHECK=FREE
+SERVER_START_ATTEMPTED=YES
+OWNED_LOCALHOST_LISTENER=PASS
+LOCALHOST_GET_HTTP=200
+SERVER_STOPPED=YES
+PORT_RELEASED=YES
+CARD_MUTATIONS=NO
+C_P2=PASS
+EVIDENCE_DIR=/tmp/ChromaticHub-H01B3C-P1A.mfsvd3mm/receipts
+SERVER_LOG=/tmp/ChromaticHub-H01B3C-P1A.mfsvd3mm/logs/c-p2-server.log
+```
+
+**Acceptance:** C-P2 PASS **on owner-reported native execution evidence**, not independently executed by ChatGPT. The script checks manifest/source integrity, unchanged symlink containment, committed package/lock root dependency agreement and key installed modules; it launches from the fixture source with isolated HOME, config/data and selected port **18283**, verifies the actual localhost listener belongs to its child process, sends a single read-only HTTP `GET /`, and terminates the owned process, checking port release. The printed output alone does **not** establish that every side effect of startup is confined to the fixture or that no new user data files were created by initialization. The full local log/JSON receipt has **not been supplied for independent inspection**.
+
+**Post-C-P2 status:** server stopped; port released; fixture and `receipts/c-p2-receipt.json`/server log preserved. No test card was created or mutated by the C-P2 verification script. **C-P3-A disposable-card setup and C-P3-B race experiments remain unauthorized.** No production card or ChatGPT-owned Hub source should be touched.
+
+### C-P3 stage separation (planned; not authorization)
+
+| Gate | Proposed scope | Write permissions | Acceptance |
+| --- | --- | --- | --- |
+| **C-P3-0** | Read-only check of the preserved C-P2 receipt, log warning classes, actual data subtree, and process/port absence | None | No unexpected outside-fixture path, unknown writers or startup hazards |
+| **C-P3-A** | Create **one** entirely synthetic disposable card *inside the isolated data root*; preserve an immutable baseline and prove API plus offline PNG readback | Only the explicitly named disposable card and fixture-local supporting state, after separate approval | Reproducible card baseline, full-card and disk fingerprints, 0 production writes |
+| **C-P3-B1** | Controlled stale hidden-editor `json_data` experiment involving only that card and a user-visible, approved merge/save sequence | Separately authorized bounded fixture-only mutations | Establish whether newer metadata is overwritten; record exact interleaving, do not infer quiescence from success |
+| **C-P3-B2** | Queued debounce and in-flight native save ordering | Separate approval and reviewed bounded instrumentation/observation method | Detect delayed save after apparent UI quiescence; stop on uncertain completion |
+| **C-P3-B3** | Cross-tab and failure-injection scenarios | Deferred, higher-risk separate approval | Explicitly characterize limitations; no claim of transaction-level safety |
+
+**C-P3-A prerequisite:** owner and ChatGPT review the C-P2 log/receipt first, verify the isolated instance has no unexpected default/user cards, identify a fixture-only baseline/restore method, and approve an exact synthetic-card creation plan. Future native testing never promotes the H01-B3-B adapter to `safe:true`; it remains deny-only until a separate design and independent acceptance.
 
 ## D. C-P3 — mutation experiments (NOT AUTHORIZED)
 
@@ -143,6 +179,6 @@ The experiment harness must not monkey-patch live SillyTavern or send mutation r
 - Abort/cleanup must target only the exact disposable processes and directories proven to be owned by this fixture. Never blanket-kill or `rm -rf` by guessed paths. Preserve or archive evidence before deleting anything.
 - H00-C P4 offline acceptance evidence debt remains historical; do not confuse that with new H01-B3-C receipts.
 
-## Decision needed after C-P0
+## Next decision after C-P2
 
-Source compatibility, basic configured paths and dependency-symlink audit pass. **C-P1-A filesystem-only assembly was owner-reported PASS** at `/tmp/ChromaticHub-H01B3C-P1A.mfsvd3mm`. Next: read-only manifest verification and a separately scoped **C-P2 isolated startup/observation authorization**, including a fresh port check. **C-P3 card mutations remain unauthorized; no Antigravity coding task is warranted.**
+**C-P1-A and C-P2 are accepted based on the owner's execution receipts.** Research and isolation design remain documentation-only. Next is **C-P3-0 receipt/log review**, strictly read-only, followed by a separately authorized **C-P3-A disposable-card baseline** if no unexpected startup side effects are found. Preserve the existing fixture and evidence. No Antigravity coding task, production adapter activation, real-card write or race experiment is authorized.
