@@ -27,7 +27,7 @@
 
 ## Next milestone: H01-B3-D2-A — sidecar state/API contract freeze
 
-**Owner-approved architectural direction:** ADR-002 pragmatic Option A. **ChatGPT** freezes the schema, server-side CAS, error states, owner-binding transitions and explicit backup/portability warning before any Antigravity coding assignment. [Roadmap](design/H01-B3-D2-sidecar-implementation-roadmap.md). After contract review, issue a bounded Antigravity G0/G1 plan-only mission for pure state-machine implementation; the owner approves subsequent implementation gates separately.
+**Owner-approved architectural direction:** ADR-002 pragmatic Option A. **ChatGPT prepared [D2-A sidecar state/API contract v1](design/H01-B3-D2-A-sidecar-state-api-contract-v1.md) for owner/independent review**: strict sidecar envelope with attached-but-uninitialized `registry:null`, distinct state and registry revisions, versioned plugin routes, unique-avatar binding, per-user CAS, disk write uncertainty and portability warnings. **Contract not yet approved for implementation.** After contract review, issue a bounded Antigravity G0/G1 plan-only mission for pure state-machine implementation; the owner approves subsequent implementation gates separately. [Roadmap](design/H01-B3-D2-sidecar-implementation-roadmap.md).
 
 ## Historical H01-B3-C research scope (completed with B1 registry loss)
 
