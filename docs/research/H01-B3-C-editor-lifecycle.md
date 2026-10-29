@@ -19,7 +19,23 @@ The owner provided `git ls-tree -r HEAD` file blob hashes for the intended nativ
 
 `public/script.js` is `777a2d5983a6283ef9b26726e75192da1e3f3cea` at the pinned source, versus `5a73f7e78d000d404aba02e29c21dd2c18ea7b4b` at the owner HEAD. The owner supplied the complete `git diff --unified=5 <pinned> HEAD -- public/script.js`: the **sole difference** changes “posible” to “possible” in a source comment at approximately line 9775. There is **no executable behavior change** in the inspected diff.
 
-The user-reported working tree is dirty only for `package.json` and `package-lock.json`; both are pre-existing and must remain untouched. **C-P0 source compatibility: PASS.** Remaining C-P0 work is environment/process/port/config/data isolation inventory; neither server launch nor native mutations are authorized.
+The user-reported working tree is dirty only for `package.json` and `package-lock.json`; both are pre-existing and must remain untouched. **C-P0 source compatibility: PASS.** The owner also completed the initial local configuration/dependency/listener inventory described next; no server launch or native mutation is authorized.
+
+### C-P0 local configuration and dependency inventory receipt (2026-10-28)
+
+The owner inspected the actual checkout **without modifying it**:
+
+| Item | Owner-reported observation | Interpretation / limit |
+| --- | --- | --- |
+| Local `config.yaml` | Regular file resolving to `/home/zzzne4/SillyTavern/config.yaml` | Top-level path is not a symlink; effective path under an actual launched process is **not established** |
+| Local `data/` | Directory resolving to `/home/zzzne4/SillyTavern/data` | Top-level path is not a symlink; do not copy from this production data root |
+| Selected config keys | `dataRoot: ./data`, `listen: false`, `port: 8000` | Configured standalone defaults; runtime launch arguments/global mode might override them |
+| `node_modules` | Directory (not a top-level symlink) | Nested dependency symlink containment and copy compatibility **not yet audited** |
+| Listener inventory | `ss -ltnp` filtered for Node/8000/18180 returned header only | No **matching** sockets in the sampled output; does not prove all services/processes absent |
+| Git worktree | Only `package.json` and `package-lock.json` modified | Preserve pre-existing changes; do not reset, install, or copy dirty manifests into an immutable source snapshot without explicit decision |
+| Runtime version | Node `v24.22.1` | Matches the prior H00-C staging runtime |
+
+**C-P0 outcome:** source compatibility and basic standalone **configuration plausibility PASS**. The *effective* launch mode/dataRoot (no target process observed), nested dependency symlink safety, other writers and separate browser-profile readiness remain unverified. These are safeguards for C-P1 design and its independently authorized preparation, **not permission to construct or start a fixture now**.
 
 ## 1. Question and conclusion
 
@@ -69,7 +85,7 @@ Even a successful Hub readback at step 2 cannot exclude step 4 happening later.
 ## 4. Gate design before an Antigravity coding mission
 
 - **C-R — Source research:** complete for the pinned 06bde93 baseline; actual intended executable's HEAD remains **unverified**.
-- **C-P0 — Owner read-only target preflight:** source revision and tracked relevant files matched as recorded above. Remaining checks: launch/global mode, effective config/data root, enabled extensions, active server ports and browser profiles; do not start a second instance yet.
+- **C-P0 — Owner read-only target preflight:** relevant source files, default config keys, top-level paths and dependency directory type inspected (see receipts). Effective launch/global mode, nested dependency symlinks and actual active writers are not yet proven; do not start another instance yet.
 - **C-P1 — Isolated setup plan:** fresh disposable source/dependency snapshot and distinct writable config/data directories with symlink and path containment checks; never point at owner production data. Preparation requires separate owner approval.
 - **C-P2 — Read-only instance observation:** separately authorize starting isolated instance and reading its effective paths and a disposable card; no writes or API mutation.
 - **C-P3 — Owner-native race experiments:** **DEFERRED**; requires separate written disposable-card mutation authorization, backup/recovery plan and clear experiment matrix.
@@ -79,7 +95,7 @@ Even a successful Hub readback at step 2 cannot exclude step 4 happening later.
 
 ## 5. Residual questions and acceptance limitations
 
-- The intended native checkout is now pinned at `4ceca42ba2bef15f7c0f9f1040368260c8588b92` and source-compatible at the relevant call sites. Its effective **launch mode/configuration/data root** still need read-only verification.
+- The intended native checkout is now pinned at `4ceca42ba2bef15f7c0f9f1040368260c8588b92` and source-compatible at the relevant call sites. Configured standalone defaults are known, but **effective launch mode, independent fixture data root and process isolation** still require proof.
 - Which startup side effects occur outside data/config roots in the actual target? H00 used an independent archive/dependency snapshot for this reason.
 - Are any other extensions/tabs/writers active in the isolated profile? Must be absent or explicitly listed.
 - Can the editor submit after its UI closes, and under precisely which saved-debounce/switch conditions? Requires isolated owner-native experiments before a positive claim.
