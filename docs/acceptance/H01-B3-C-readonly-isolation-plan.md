@@ -162,7 +162,21 @@ C_P3_0=RECEIPTS_PASS
 
 **Decision: C-P3-0 PASS, based on owner's local report.** The preserved C-P2 receipt shows status/safety fields in expected states; zero character PNG files were detected under fixture `data/**/characters/*.png`; the keyword search found no `error|warning|fatal|exception|failed` lines in the 120-line server log. This is **not a comprehensive security or file-integrity audit** and does not prove the absence of all unlogged startup side effects, non-PNG card formats, or future concurrent writers. Treat it as sufficient evidence to **propose** C-P3-A, not as authority to perform any mutation.
 
-**C-P3-A proposed narrow scope (not yet authorized):** owner-run fixture-only restart with exact process identity and path/port containment; one synthetically named, credential-free character created under fixture data root; record card/avatar locator and full PNG hash, re-read via SillyTavern API, parse offline PNG text metadata and retain an immutable baseline in fixture receipts; stop the isolated server and verify port release. Do not copy user cards, install providers, enable ChromaticHub runtime writes, edit other cards, retry ambiguous POSTs, or run any editor-race experiment. Require explicit separate owner approval before generating an executable mutation procedure.
+**C-P3-A original proposed narrow scope (now separately authorized; native execution pending):** owner-run fixture-only restart with exact process identity and path/port containment; one synthetically named, credential-free character created under fixture data root; record card/avatar locator and full PNG hash, re-read via SillyTavern API, parse offline PNG text metadata and retain an immutable baseline in fixture receipts; stop the isolated server and verify port release. Do not copy user cards, install providers, enable ChromaticHub runtime writes, edit other cards, retry ambiguous POSTs, or run any editor-race experiment. Require explicit separate owner approval before generating an executable mutation procedure.
+
+### C-P3-A — owner-authorized synthetic one-card baseline (2026-10-28; execution PENDING)
+
+The owner explicitly authorized **C-P3-A only**. ChatGPT inspected the pinned `/api/characters/create`, `/api/characters/get`, `/csrf-token`, `src/character-card-parser.js` and existing C-P1-A/C-P2 scripts, then authored the standalone `chromatichub_h01b3c_p3a_one_card.py` (delivery attachment, not committed to product source). Its SHA-256:
+
+```text
+b85176deac3bd2b2d400e20edece853616326693e29fbe2fca3f0929bb4191c9
+```
+
+**Fixed target:** `/tmp/ChromaticHub-H01B3C-P1A.mfsvd3mm`, port `18283`, pinned source `4ceca42ba2bef15f7c0f9f1040368260c8588b92`. The only authorized card name is `CHH01B3C_Disposable_Baseline`; no initial production `chromaticHub` registry will be written. The script validates the existing fixture receipts, source archive, full extracted source, dependencies, symlink safety, empty character directory and bound port. It creates a one-shot state marker *before* the POST, starts the isolated server with fresh disabled-content/extension config and scrubbed environment, obtains a cookie session and CSRF token, sends exactly one `POST /api/characters/create`, independently verifies the sole new card PNG `chara` and `ccv3` (including PNG CRCs) and `POST /api/characters/get`, hashes and stores an owner-fixture-only read-only PNG baseline, then stops the owned server and checks port release. No browser, plugin, provider, production data or editor-race action is in scope.
+
+**Synthetic verification (ChatGPT's container, not native SillyTavern):** PNG valid/corrupt rejection PASS, CSRF/cookie/readback mock PASS, one-shot marker PASS, full integrated localhost mock with shutdown PASS, refusal of second run PASS, and false HTTP 200 without a card file STOP with no retry PASS. **Actual fixture execution remains pending owner receipt.**
+
+On any STOP including ambiguous create completion, preserve `receipts/c-p3a-state.json`, `logs/c-p3a-server.log`, the fixture data directory and any partial card; **do not rerun the script or delete/restore automatically**. Full native C-P3-A acceptance requires the owner's printed output including `C_P3_A=PASS`, `CARD_API_READBACK=PASS`, `OFFLINE_PNG_METADATA=PASS`, `BASELINE_COPY=PASS`, `SERVER_STOPPED=YES` and `PORT_RELEASED=YES`. C-P3-B editor-race experiments remain unauthorized.
 
 ### C-P3 stage separation (planned; not authorization)
 
@@ -202,4 +216,4 @@ The experiment harness must not monkey-patch live SillyTavern or send mutation r
 
 ## Next decision after C-P2
 
-**C-P1-A, C-P2 and C-P3-0 are accepted on owner-reported native evidence.** The next gate is **C-P3-A**, a separately authorized one-card synthetic fixture baseline with full API/offline persistence verification, fixture-only backup and targeted shutdown. No Antigravity coding task, production adapter activation, real-card write or editor-race experiment is authorized.
+**C-P1-A, C-P2 and C-P3-0 are accepted on owner-reported native evidence. C-P3-A was separately authorized and the verified one-shot script has been delivered; owner-native execution is pending.** The next decision depends on the actual C-P3-A receipt. No Antigravity coding task, production adapter activation, real-card write or editor-race experiment is authorized.
