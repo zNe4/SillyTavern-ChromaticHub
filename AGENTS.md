@@ -1,57 +1,55 @@
 # ChromaticHub — repository instructions for coding agents
 
-These rules apply across this repository, regardless of which coding agent or model is used. **ChromaticHub must remain small:** a reusable card-scoped character identity registry and minimal identity API, not a second roleplaying framework.
+These rules apply regardless of agent. **ChromaticHub remains a small card-scoped character identity registry and minimal identity API, not a second roleplaying framework.**
 
-## Roles and authority
+## Roles and decision authority
 
-- **Project owner:** decides scope, grants permissions, runs native acceptance, and authorizes Git integration and releases.
-- **ChatGPT:** owns project research, architecture, documentation, task decomposition, independent code review, and acceptance decisions.
-- **Coding implementer:** currently **OpenCode with GLM 5.3** on a controlled trial; earlier missions used Antigravity. Its responsibility is bounded repository inspection, implementation planning, explicitly authorized code and tests, verification, and evidence-based handoff. The agent must **not** take over project research or documentation, delegate those responsibilities to another agent, or approve its own implementation.
-- If requirements, security assumptions, architecture, Git state, or scope are unclear, **STOP** and report the issue. Do not silently choose a new design.
+- **Project owner:** grants permissions, authorizes scope, performs native acceptance, and approves Git integration/releases.
+- **ChatGPT:** owns research, architecture, documentation, mission decomposition, independent code review, and acceptance decisions.
+- **Active coding implementer: Antigravity CLI.** Its job is bounded repository inspection, planning, implementation of explicitly approved code/tests, verification, and evidence-based handoff. OpenCode/GLM 5.3 was a historical trial; its workflow is not active.
+- Never delegate ChatGPT-owned research or documentation to the coding agent. If an architectural, security, scope, or Git-state ambiguity arises, **STOP** rather than inventing a design.
 
-## Pre-edit gate: inspect → plan → independent approval
+## Before any implementation
 
-1. Read this file, [the current OpenCode workflow](docs/process/OPENCODE-WORKFLOW.md), [the H01-A identity contract](docs/design/H01-A-identity-contract-v0.1.md), and [project status](docs/STATUS.md). Antigravity-specific guidance is retained separately for older missions.
-2. Before any edit, report repository root, remote, branch, full HEAD, dirty/clean status, existing test commands, and unrelated changes.
-3. Use a dedicated task branch from the mission's **explicitly pinned base commit**, and only once that mission authorizes branch creation. Do not reset, clean, stash, discard, cherry-pick, merge, rebase, or overwrite unrelated work without owner authorization.
-4. Produce an implementation plan with exact allowed paths, tests, risk analysis, and stop conditions. **Do not implement until ChatGPT/owner review explicitly authorizes G2.** A strictly read-only mission must not create tool-generated plan files either.
-5. File scope is binding. New dependencies, package manifests, build tooling, global settings, production patches, and cross-extension integration all require separate approval.
+1. Read this file, [the active Antigravity workflow](docs/process/ANTIGRAVITY-WORKFLOW.md), [H01-A identity contract](docs/design/H01-A-identity-contract-v0.1.md), [project status](docs/STATUS.md), and mission-relevant source/tests. Keep the root rules concise; do not automatically inline entire manuals.
+2. Report repository root, remote, branch, full HEAD, `git status --short`, relevant existing tests and unrelated changes. Compare against the mission's **explicit pinned baseline**.
+3. **G0 inspect → G1 plan → G2 implement → G3 verify → G4 independent review → G5 owner-native acceptance.** G1 is read-only unless the mission specifically allows generated artifacts. Do not edit, stage, commit, or branch until authorized.
+4. After G1 approval, use only an approved dedicated task branch, exact permitted paths, and specified tests/stop conditions. Do not silently reset, clean, stash, discard, cherry-pick, merge, rebase, force-push, or resolve baseline mismatches.
+5. Dependencies, manifests, build tooling, permissions, global settings, production patches and cross-extension integrations require separate authorization.
 
-## Implementation and verification
+## Implementation and evidence
 
-- Add focused failing tests before implementing behavior where practical. Prefer dependency-free ES modules and Node's built-in `node:test` runner.
-- Existing tests are available:
+- Prefer small dependency-free ES modules and Node's built-in `node:test`. Add focused failing tests before code when practical.
+- Current test entry points:
   - `node --test tests/identity-registry.test.mjs`
   - `node --test tests/sillytavern-adapter.test.mjs`
   - `node --test tests/card-mutation-controller.test.mjs`
+  - `node --test tests/editor-safety.test.mjs`
+  - `node --test tests/sillytavern-editor-safety-adapter.test.mjs`
   - `node --test`
-  Baseline H01-B0/B1/B2 reported **201 passing synthetic tests** on 2026-10-28; re-execute tests on the actual target commit, never present historic results as a new run.
-- Capture exact commands, exit codes, total/pass/fail/skip counts, and limitations. Never claim success without executed evidence. The coding agent's results remain subject to independent ChatGPT review.
-- Preserve caller-owned inputs and validated registry shape. No name-derived identity, implicit merge, broad card updates, or autonomous NPC promotion.
-- **H01-B2 is accepted as a synthetic-only controller, not approved for native writes.** No requests that mutate a real running SillyTavern installation or user card until the owner separately authorizes an isolated acceptance mission.
-- Do not generate images, call paid providers, install dependencies, handle personal secrets, or invoke external services merely to test the pure core.
-- Before handoff: `git diff --check`, `git status --short`, `git diff --stat`; inspect all scoped changes and relevant staged diffs. Report untested conditions.
+- The last accepted H01-B3-B integration reported **342 passing synthetic tests** at main `e3e489a4f2444b98e031021b5f0246372ac5e644` (2026-10-28). This is historical reported local evidence, **not** a substitute for rerunning tests on the current checkout.
+- Record exact commands, exit codes, test totals/pass/fail/skip, changed paths, test limitations and whether any network mutation occurred. Run `git diff --check`, inspect the diff and `git status --short`; if staging is authorized, also run `git diff --cached --check` and inspect staged paths.
+- Never claim native acceptance based on synthetic tests. Do not use personal card contents, credentials, paid providers, external services or real images as routine fixtures. Never approve your own implementation.
+- Prioritize actual contract/safety blockers during review. Distinguish them from ordinary correctness issues and optional hardening instead of expanding the mission implicitly.
 
-## Publication and stop rules
+## Publication and stop boundaries
 
-- **Default: STOP** before staging, committing, pushing, opening a PR, merging, or releasing. Each action requires explicit mission-specific approval.
-- An implementation assignment may separately authorize **staging only allowed files**, committing, and pushing a **dedicated review branch**. This is a handoff, **not** acceptance. No push to `main`, force push, tag, PR, merge, or release without new authorization. If a push is rejected, stop; never force or silently rebase.
-- Before an authorized branch push, verify the exact staged paths, run `git diff --cached --check`, and ensure the commit contains only intended changes. Report branch, pinned base, full HEAD SHA, commit/compare URL, test receipts, and worktree status.
-- After independent ChatGPT review, **the owner** authorizes final integration and any native test. Never automatically begin the next mission.
+- **Default STOP** before Git staging, commit, push, PR, merge, tag or release unless expressly included in the mission.
+- If authorized, commit only scoped files to a dedicated review branch; push only if explicitly authorized and permitted. If a push is denied, **stop**; the owner may publish manually. No force-push or permission bypass.
+- A review-branch publication is **not** integration approval. ChatGPT independently reviews; the owner approves final merge, release and native actions. Never auto-advance to another mission.
 
-## Architecture invariants
+## Architecture and safety invariants
 
-- Authoritative reusable identities live under `data.extensions.chromaticHub` **on each installed card**. UUIDs are card-local; equal names or copied UUIDs do not prove global identity.
-- SillyTavern's `characterId` is an ephemeral array index; avatar filenames are mutable locators, not globally permanent IDs.
-- ChromaticDialogue `cN`, chat-local NPCs, ChromaticMessages timelines, and ChromaticImages assets retain independent ownership. Do not silently promote, infer, or merge them.
-- All writes require explicit authorization, exact owner resolution, safe editor/context checks, and independent persistence readback. SillyTavern provides **no server-side compare-and-swap** on the current merge route. In-process queues do not guarantee cross-tab atomicity.
-- Unknown schema, ambiguous identity, conflicting state, and uncertain writes must fail closed. Unknown post-dispatch completion means **no automatic retry** and an appropriate per-card quarantine.
-- Keep credentials, private character/card contents, prompts, private conversations, and image bytes out of routine logs, review artifacts, and synthetic fixtures.
+- Reusable identities live under `data.extensions.chromaticHub` on each installed card. UUIDs are card-local; identical names or copied UUIDs do not establish global identity.
+- SillyTavern's `characterId` is an ephemeral array index; avatar filenames are mutable locators, not permanent global IDs.
+- ChromaticDialogue `cN`, chat-local NPCs, ChromaticMessages timelines and ChromaticImages assets retain their own ownership. No implicit promotion, name-based inference or identity merge.
+- H01-B2-F1's mutation controller and H01-B3-B's editor-safety evaluator/adapter are **accepted for synthetic testing only**. The runtime editor-safety adapter is deliberately **deny-only**. No real-card mutation or production activation is authorized.
+- Future writes require explicit owner approval, exact locator/context validation, editor-save safety, and independent persisted readback. The SillyTavern merge route has **no server-side compare-and-swap**; per-card in-process queues do not provide cross-tab atomicity.
+- Unknown schemas, stale/ambiguous identities, uncertain writes and unobservable editor-save activity must fail closed. No automatic retry after ambiguous POST completion; quarantine unresolved card outcomes.
+- Do not log, publish or include credentials, private character contents, chats, prompts or image bytes in review artifacts.
 
-## Local environment and tool-specific rules
+## Environment and CLI
 
-The owner runs **Arch Linux**, **zsh**, and **Kitty**. Use shell commands appropriate to that environment and respect the actual checked-out root; never assume another user's absolute path.
+Owner environment: **Arch Linux, zsh, Kitty**. Use the actual repository root rather than assuming a user-specific path.
 
-For the current trial, see [OpenCode workflow](docs/process/OPENCODE-WORKFLOW.md). The historical [Antigravity workflow](docs/process/ANTIGRAVITY-WORKFLOW.md) applies only when an Antigravity mission explicitly selects it.
-
-OpenCode's Plan/Build modes and tool permissions **do not override** the explicit G0–G5 authorization gates. Do not read or modify the owner's provider credentials or OpenCode global settings as part of an implementation mission.
+Antigravity automatically reads root `AGENTS.md`. The detailed workflow is linked above. Favor exact `@` file references, focused test loops and early interruption (`esc`) when needed. Local permission presets (`request-review` or stricter) are the owner's decision; never inspect, expose or modify global credential/settings files without express authorization. CLI permissions do not supersede mission gates.

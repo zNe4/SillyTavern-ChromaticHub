@@ -1,6 +1,6 @@
-# OpenCode workflow — ChromaticHub
+# OpenCode workflow — ChromaticHub (historical trial)
 
-**Status:** controlled OpenCode / GLM 5.3 trial adopted after G0 verification on **2026-10-28**. This document describes the tool workflow, **not permission** to begin a new implementation or write actual SillyTavern card data.
+**Status: archived as an implementation workflow on 2026-10-28.** OpenCode / GLM 5.3 was used for the H01-B3-B synthetic-only milestone but is no longer the active coding implementer due to weekly token cost. The active workflow is [Antigravity](ANTIGRAVITY-WORKFLOW.md) and current instructions are in [AGENTS.md](../../AGENTS.md). This document preserves historical trial controls and test receipts; it is **not** authorization to start new OpenCode missions or native card writes.
 
 **References:** [repository rules](../../AGENTS.md) · [project status](../STATUS.md) · [OpenCode V2 agents](https://opencode.ai/v2/docs/agents) · [OpenCode V2 permissions](https://opencode.ai/v2/docs/permissions). For historical Antigravity missions, see [Antigravity workflow](ANTIGRAVITY-WORKFLOW.md).
 
