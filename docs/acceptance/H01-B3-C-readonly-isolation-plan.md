@@ -219,6 +219,8 @@ Objective: determine whether a **stale editor form** on this single synthetic ca
 
 **Required next authorization:** review an exact B1 executable request sequence and fixture baseline/restore method, then separately approve *one* controlled synthetic-card overwrite experiment. Until then, **no server startup, browser execution, merge/write, editor save or B1 mutation is authorized**.
 
+**Detailed B1 design:** [H01-B3-C-B1-stale-editor-protocol.md](H01-B3-C-B1-stale-editor-protocol.md), including exact single-card JSON merge payload, ordered UI/save checkpoints, result classifications, and baseline preservation. **Protocol review is not mutation authorization.**
+
 ### C-P3 stage separation (planned; not authorization)
 
 | Gate | Proposed scope | Write permissions | Acceptance |
@@ -257,4 +259,4 @@ The experiment harness must not monkey-patch live SillyTavern or send mutation r
 
 ## Next decision after C-P3-A
 
-**C-P1-A, C-P2, C-P3-0 and C-P3-A are accepted on owner-reported native evidence.** The disposable character and its hashed baseline are preserved; the isolated server was stopped. The next task is **ChatGPT-owned C-P3-B1 controlled stale-editor protocol review**. Its execution requires separate explicit owner authorization for fixture-only metadata and editor writes. No Antigravity implementation, production adapter activation or real-card mutation is authorized.
+**C-P1-A, C-P2, C-P3-0 and C-P3-A are accepted on owner-reported native evidence.** The disposable character and its hashed baseline are preserved; the isolated server was stopped. **ChatGPT-owned C-P3-B1 source-reviewed protocol is now drafted** at the linked standalone document. Its execution requires separate explicit owner authorization for fixture-only metadata and editor writes. No Antigravity implementation, production adapter activation or real-card mutation is authorized.
