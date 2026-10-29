@@ -232,7 +232,7 @@ REGISTRY_ABSENT=true
 EDITOR_JSON_SHA256=9f66a4742ccafc2342bb05d49427ffc2d19547059f102226f7473be0c377b424
 ```
 
-**Decision: hidden editor JSON fingerprint accepted on owner-reported evidence.** The selected editor form is correctly targeted, the registry is absent, and the raw hidden JSON matches the accepted pre-merge PNG `ccv3` metadata byte-for-byte. **Still pending:** owner confirmation of *zero* `/api/characters/edit` requests in Firefox Network since opening; no merge may be sent until this separate check passes. **Later B1-DIRECT merge/disk persistence evidence is recorded below; editor Save remains pending.**
+**Decision: hidden editor JSON fingerprint accepted on owner-reported evidence.** The selected editor form is correctly targeted, the registry is absent, and the raw hidden JSON matches the accepted pre-merge PNG `ccv3` metadata byte-for-byte. **Still pending:** owner confirmation of *zero* `/api/characters/edit` requests in Firefox Network since opening; no merge may be sent until this separate check passes. **Later B1-DIRECT merge, autosave, and final readback checkpoints are recorded below.**
 
 ### B1-DIRECT — one merge submitted; independent PNG persistence verified (2026-10-29)
 
@@ -257,8 +257,41 @@ POST_MERGE_SNAPSHOT=PASS
 POST_MERGE=PASS
 ```
 
-**Decision: post-merge disk persistence PASS on owner-reported native evidence.** A valid empty registry `{schemaVersion:1,revision:1,characters:[]}` is now persisted at `data.extensions.chromaticHub`. The baseline `pre-merge.png` remains hash `6593f9ff1320afff74a0b434ab92b6deb8701addc32a55afff8a723ad2e92aab`; `post-merge.png` is preserved under `/home/zzzne4/ChromaticHub-B1-direct._xlayxdb`. **The manual UI editor Save has not been attempted.** A **fresh post-merge `/api/characters/get` readback**, current editor hidden-JSON recheck, and explicit Network-panel confirmation of no earlier `/api/characters/edit` requests are **still outstanding** before B1 Save. The pre-merge client API check did pass, but it does not substitute for post-merge independent API verification. Do not infer a browser-safe write window from this disk success.
+**Decision: post-merge disk persistence PASS on owner-reported native evidence.** A valid empty registry `{schemaVersion:1,revision:1,characters:[]}` is now persisted at `data.extensions.chromaticHub`. The baseline `pre-merge.png` remains hash `6593f9ff1320afff74a0b434ab92b6deb8701addc32a55afff8a723ad2e92aab`; `post-merge.png` is preserved under `/home/zzzne4/ChromaticHub-B1-direct._xlayxdb`. **At this checkpoint, no native autosave had occurred; a later section records its result.** A **fresh post-merge `/api/characters/get` readback**, current editor hidden-JSON recheck, and explicit Network-panel confirmation of no earlier `/api/characters/edit` requests are **still outstanding** before B1 Save. The pre-merge client API check did pass, but it does not substitute for post-merge independent API verification. Do not infer a browser-safe write window from this disk success.
+
+### B1-DIRECT — decisive owner-native autosave and final independent readback (2026-10-29)
+
+**Accepted B1 core outcome: `REGISTRY_LOST` (stale native editor overwrite reproduced).** The owner reports zero earlier `/api/characters/edit` requests, a single form-triggered native `POST /api/characters/edit` following the addition of one exclamation point in the description field, and a successful HTTP status. SillyTavern's pinned frontend source schedules this request via `saveCharacterDebounced` on input and submits the form's stale hidden `json_data`; there is no separate manual save requirement in this experiment. No additional write should be attempted.
+
+Owner's final offline `post-autosave.png` snapshot comparison against the verified `post-merge.png`:
+
+```text
+MERGED_REGISTRY_VALID=True
+ORIGINAL_DESCRIPTION=This is a test chat for ChromaticHub!
+FINAL_DESCRIPTION=This is a test chat for ChromaticHub!!
+FINAL_REGISTRY=null
+OTHER_METADATA_UNCHANGED=False
+POST_AUTOSAVE_CARD_SHA256=bdab0ff3a1709ed3f8b1ad140f113f5317fa0ffa821ebaa577372799e506913e
+POST_AUTOSAVE_JSON_SHA256=b70bc2a87ede8ac0d098595c7345855de3c0923ab618cc61b711ccae959681fe
+B1_DISK_OUTCOME=REGISTRY_LOST
+POST_AUTOSAVE_SNAPSHOT=PASS
+```
+
+Owner's independent read-only `/api/characters/get` after autosave:
+
+```text
+API_DESCRIPTION=This is a test chat for ChromaticHub!!
+API_REGISTRY=null
+API_JSON_SHA256=b70bc2a87ede8ac0d098595c7345855de3c0923ab618cc61b711ccae959681fe
+B1_API_READBACK=PASS
+```
+
+**Causal chain:** preserved pre-merge disk and hidden-form raw metadata hashes matched exactly and lacked the registry; one merge added `{schemaVersion:1,revision:1,characters:[]}`, validated by offline PNG and fresh API readback while the form remained stale; one normal UI input caused native autosave; the final PNG and fresh API response match, both lack the registry, and the description change persisted. This is sufficient to classify **B1 core verification as PASS, overwrite hazard reproduced**. It establishes an unsafe stale-editor interleaving in this version of SillyTavern; it is not a general concurrency proof or certification of an editor-safe write window.
+
+**Supplemental diagnostic still open:** `OTHER_METADATA_UNCHANGED=False` means at least one other metadata path changed beyond the deliberately edited description and removed registry. Identify those paths from the preserved snapshots in a strictly read-only follow-up; do not assume the registry was the sole incidental difference.
+
+Preserve `/home/zzzne4/ChromaticHub-B1-direct._xlayxdb/pre-merge.png`, `post-merge.png`, and `post-autosave.png`; do not restore or re-merge automatically. **Keep H01-B3-B runtime adapter unconditionally deny-only (`safe:false`, `EDITOR_SAFETY_NOT_CERTIFIABLE`).** Any recovery or new write strategy requires a separate approved design and scope.
 
 ## 7. Review outcome
 
-**The owner elected to use the regular testing-only SillyTavern checkout for the next B1 attempt.** The original B1-R1 and planned B1-R2 fixture scripts remain retired; their evidence must be preserved. The next test must target one newly created disposable card, have a separate verified backup and only one merge plus one manual editor Save. No native overwrite outcome exists yet. H01-B3-B remains deny-only.
+**The owner elected to use the regular testing-only SillyTavern checkout for the next B1 attempt.** The original B1-R1 and planned B1-R2 fixture scripts remain retired; their evidence must be preserved. The next test must target one newly created disposable card, have a separate verified backup and only one merge plus one manual editor Save. The later direct native experiment reproduced registry loss; keep H01-B3-B deny-only pending separate approved architecture work.
