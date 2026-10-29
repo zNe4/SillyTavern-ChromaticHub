@@ -1,5 +1,7 @@
 # ChromaticHub — project status
 
+**Research-branch update (2026-10-29; not merged into main):** H01-B3-C-B1 owner-native test **reproduced `REGISTRY_LOST`** after a normal stale-editor autosave, with matching final PNG/API fingerprints and all five changed metadata field paths accounted for. The owner endorsed moving ChromaticHub's authoritative store into **per-user, per-installed-card directories** managed by an explicitly enabled companion SillyTavern server plugin. [H01-B3-D1 lifecycle research](research/H01-B3-D1-native-lifecycle-binding.md) is source-reviewed; [ADR-002 external persistence](decisions/ADR-002-external-card-scoped-persistence.md) is **PROPOSED for owner review**, *not accepted*. No native plugin installation, production data mutation, old adapter activation, or Antigravity implementation mission is authorized. Main remains unchanged by these research commits.
+
 **As of 2026-10-28.** Last accepted code milestone (H01-B3-B) integrated at `e3e489a4f2444b98e031021b5f0246372ac5e644` on `main`. **H01-B3-B accepted for synthetic testing only. No native card-write activation is authorized.**
 
 ## Accepted milestones
