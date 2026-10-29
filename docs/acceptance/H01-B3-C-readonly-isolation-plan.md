@@ -39,10 +39,10 @@ The owner may inspect relevant socket listeners separately with `ss -ltn`; do no
 - Git: `/home/zzzne4/SillyTavern`, branch `m03-d2b1-nanogpt-proxy`, HEAD `4ceca42ba2bef15f7c0f9f1040368260c8588b92`; only `package.json` and `package-lock.json` modified. **Do not touch those edits.**
 - Node `v24.22.1`. All six pinned research source files match functionally: five Git blob IDs match exactly; `public/script.js` has only a “posible”→“possible” comment correction.
 - `config.yaml` regular file and `data/` real directory within the owner checkout, with `dataRoot: ./data`, `listen: false`, `port: 8000`. These describe the **configuration file**, not the effective startup state of a running process.
-- `node_modules` is a directory, not a top-level symlink. **Nested symlinks not yet audited.**
+- `node_modules` is a directory, not a top-level symlink. **Nested symlinks audited in source:** 40 total; 0 absolute, 0 checkout-escaping, 0 broken. Relocated-copy and dependency/lock compatibility checks remain required.
 - The earlier listener filter returned only a header. No matching Node, port 8000 or port 18180 listener was reported at that instant; this is not comprehensive process assurance.
 
-**Decision:** Enough evidence to finish the isolated-fixture **design** (C-P1-D). **Do not execute setup/startup.** Before any future C-P1-A assembly, separately confirm nested symlink safety, source/dependency compatibility and the intended launch command's non-global mode.
+**Decision:** Owner's read-only source/dependency preflight **PASS** for the design checkpoint: 40 nested symlinks, 0 absolute, 0 checkout-escaping, 0 broken. **C-P1-D design complete; do not execute setup/startup.** Future C-P1-A assembly still requires independent owner approval, post-copy containment recheck, source/dependency compatibility and review of the exact standalone launch command.
 
 ## B. C-P1 — isolated fixture design (future approval required)
 
@@ -87,7 +87,7 @@ H00-C's earlier fixture used separate source/dependency copy plus an isolated da
 
 ### Remaining read-only checks before C-P1-A authorization
 
-- Assess whether any *nested* `node_modules` symlink resolves beyond the intended source/dependency tree; only a summarized count/binary PASS or STOP is needed, not private paths.
+- **Completed:** owner audited the installed `node_modules` tree: SYMLINKS=40; ABSOLUTE=0; ESCAPING_CHECKOUT=0; BROKEN=0; COPY_PREFLIGHT=PASS. Recheck all containment after any future copy.
 - Confirm the intended standalone launch entrypoint and whether any global-mode startup is activated; the current checked `config.yaml` alone does **not** establish actual runtime options.
 - Confirm that a future disposable Firefox profile is acceptable, and that no provider keys or production cards will be copied.
 
@@ -123,4 +123,4 @@ The experiment harness must not monkey-patch live SillyTavern or send mutation r
 
 ## Decision needed after C-P0
 
-Source compatibility and basic configured paths are now verified. **C-P1-D design is ready for owner review.** Complete the remaining read-only dependency/launch inspection, then explicitly authorize or reject **C-P1-A fixture assembly**; do not infer permission to start a server, mutate even a disposable card, or create an Antigravity task. **No Antigravity coding task is currently warranted.**
+Source compatibility, basic configured paths, and source dependency symlink audit now pass. **C-P1-D isolated-fixture design is complete for owner review.** Explicit owner approval is still required for **C-P1-A physical assembly**, followed by separate permission for server startup and read-only observation (C-P2). Do not infer permission to start a server, mutate even a disposable card, or create an Antigravity task. **No Antigravity coding task is currently warranted.**

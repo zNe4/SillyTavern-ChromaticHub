@@ -30,12 +30,26 @@ The owner inspected the actual checkout **without modifying it**:
 | Local `config.yaml` | Regular file resolving to `/home/zzzne4/SillyTavern/config.yaml` | Top-level path is not a symlink; effective path under an actual launched process is **not established** |
 | Local `data/` | Directory resolving to `/home/zzzne4/SillyTavern/data` | Top-level path is not a symlink; do not copy from this production data root |
 | Selected config keys | `dataRoot: ./data`, `listen: false`, `port: 8000` | Configured standalone defaults; runtime launch arguments/global mode might override them |
-| `node_modules` | Directory (not a top-level symlink) | Nested dependency symlink containment and copy compatibility **not yet audited** |
+| `node_modules` | Directory (not a top-level symlink) | Nested dependency symlink audit: 40 total, none absolute/escaping/broken; copied-tree integrity **still must be reverified** |
 | Listener inventory | `ss -ltnp` filtered for Node/8000/18180 returned header only | No **matching** sockets in the sampled output; does not prove all services/processes absent |
 | Git worktree | Only `package.json` and `package-lock.json` modified | Preserve pre-existing changes; do not reset, install, or copy dirty manifests into an immutable source snapshot without explicit decision |
 | Runtime version | Node `v24.22.1` | Matches the prior H00-C staging runtime |
 
-**C-P0 outcome:** source compatibility and basic standalone **configuration plausibility PASS**. The *effective* launch mode/dataRoot (no target process observed), nested dependency symlink safety, other writers and separate browser-profile readiness remain unverified. These are safeguards for C-P1 design and its independently authorized preparation, **not permission to construct or start a fixture now**.
+**C-P0 outcome:** source compatibility, basic standalone configuration plausibility, and dependency symlink metadata checks **PASS**. The *effective* launch mode/dataRoot (no target process observed), other writers and separate browser-profile readiness remain unverified. These are safeguards for C-P1 design and its independently authorized preparation, **not permission to construct or start a fixture now**.
+
+### C-P0 nested dependency symlink receipt (2026-10-28)
+
+The owner ran a read-only Python metadata walk of `/home/zzzne4/SillyTavern/node_modules` with `os.walk(..., followlinks=False)`, `os.readlink`, `Path.resolve(strict=False)` and an existence check, reporting:
+
+```text
+SYMLINKS=40
+ABSOLUTE=0
+ESCAPING_CHECKOUT=0
+BROKEN=0
+COPY_PREFLIGHT=PASS
+```
+
+**Interpretation:** the existing dependency tree contains no detected absolute, broken or checkout-escaping links under that inspection. This **does not** prove future relocated contents remain safe, that installed dependencies match the committed package lock, or that there are no symlink races; re-audit the fixture copy after assembly. No files were modified by this check.
 
 ## 1. Question and conclusion
 
@@ -85,7 +99,7 @@ Even a successful Hub readback at step 2 cannot exclude step 4 happening later.
 ## 4. Gate design before an Antigravity coding mission
 
 - **C-R — Source research:** complete for the pinned 06bde93 baseline; actual intended executable's HEAD remains **unverified**.
-- **C-P0 — Owner read-only target preflight:** relevant source files, default config keys, top-level paths and dependency directory type inspected (see receipts). Effective launch/global mode, nested dependency symlinks and actual active writers are not yet proven; do not start another instance yet.
+- **C-P0 — Owner read-only target preflight:** relevant source files, default config keys, top-level paths and nested dependency symlinks inspected (see receipts). Effective launch/global mode and actual active writers are not yet proven; do not start another instance yet.
 - **C-P1 — Isolated setup plan:** fresh disposable source/dependency snapshot and distinct writable config/data directories with symlink and path containment checks; never point at owner production data. Preparation requires separate owner approval.
 - **C-P2 — Read-only instance observation:** separately authorize starting isolated instance and reading its effective paths and a disposable card; no writes or API mutation.
 - **C-P3 — Owner-native race experiments:** **DEFERRED**; requires separate written disposable-card mutation authorization, backup/recovery plan and clear experiment matrix.
