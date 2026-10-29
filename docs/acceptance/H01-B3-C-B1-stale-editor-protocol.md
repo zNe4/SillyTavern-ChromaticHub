@@ -99,9 +99,9 @@ The script does **not** post `/api/characters/edit`: that is the single manual U
 
 **B1 terminal output will determine acceptance** (must include `C_P3_B1=PASS`, `B1_REGISTRY_RESULT=REGISTRY_LOST|REGISTRY_PRESERVED`, `SERVER_STOPPED=YES`, `PORT_RELEASED=YES`, `BROWSER_STOPPED=YES`). The owner's browser network observation is a separately reported manual fact, not an independently captured network trace. No B2, B3, production write activation, concurrent write safety claim or fixture restoration is authorized.
 
-### C-P3-B1 owner-native preflight STOP and independent guard review (2026-10-29)
+### C-P3-B1 owner-native preflight STOP and confirmed false positive (2026-10-29)
 
-The owner executed the authorized B1 one-shot script and reported:
+The owner ran the first B1 script and obtained:
 
 ```text
 C_P3_B1_CHECK=STOP:CARD_COUNT_OR_TARGET_INVALID
@@ -109,23 +109,47 @@ BROWSER_STOPPED=YES
 SERVER_STOPPED=YES
 PORT_RELEASED=NOT_STARTED
 C_P3_B1=STOP
-EVIDENCE_DIR=/tmp/ChromaticHub-H01B3C-P1A.mfsvd3mm/receipts
-SERVER_LOG=/tmp/ChromaticHub-H01B3C-P1A.mfsvd3mm/logs/c-p3b1-server.log
 ```
 
-**Decision: preflight STOP, no B1 native experiment performed.** Exact script inspection shows `b1_preflight()` calls `get_cards()` and raises `CARD_COUNT_OR_TARGET_INVALID` **before** `save_state(state)`, source startup, browser startup, `/merge-attributes`, or any editor save. It is therefore expected that `c-p3b1-state.json`, `c-p3b1-config.yaml`, and the B1 server log were never created by this attempt; **local absence still needs read-only verification**.
+**First invocation STOPPED before creating one-shot artifacts, launching server/Firefox, or issuing a character request.** Read-only owner investigation conclusively identified the guard error:
 
-**Probable tester defect:** the original `get_cards()` recursively walks all `data/` and counts *every regular file* whose immediate parent directory name is `characters`, not just `data/default-user/characters/*.png`. SillyTavern's `DiskCache.DIRECTORY = 'characters'` writes entries under `data/_cache/characters/` during a card readback (see pinned [`src/endpoints/characters.js`](https://github.com/SillyTavern/SillyTavern/blob/06bde939fb1e9c4c8d8641d810f0a916b5bce127/src/endpoints/characters.js#L24-L114)). Since C-P3-A performed a successful API readback, such entries may exist in the fixture. A local synthetic test with exactly one actual `default-user/characters/*.png` and one `_cache/characters` file returned **2**, causing the same `CARD_COUNT_OR_TARGET_INVALID` failure, thus reproducing the **guard bug**, not proving the exact composition of the owner's data tree.
+```text
+ORIGINAL_GUARD_COUNT=2
+REAL_CARD_FILES=1
+REAL_CARD_PNGS=1
+CACHE_CHARACTER_FILES=1
+OTHER_CHARACTER_FILES=0
+DATA_SYMLINKS=0
+CARD_HASH_MATCH=True
+BASELINE_HASH_MATCH=True
+B1_STATE_EXISTS=False
+B1_CONFIG_EXISTS=False
+B1_LOG_EXISTS=False
+B1_PRE_SNAPSHOT_EXISTS=False
+```
 
-**Immediate next action: read-only owner inventory** of file counts in `data/default-user/characters`, `data/_cache/characters` and any other `characters` directories, plus both accepted original card/baseline SHA-256 and existence-only checks for B1 one-shot artifacts. **Do not rerun the old script, delete caches, restore cards, launch a server or assume a specific cause before the diagnostic report.**
+**Root cause confirmed:** original `get_cards()` counted the genuine file in `data/default-user/characters/` and a **non-card disk-cache entry** under `data/_cache/characters/`. The cache is expected after C-P3-A readback; see the pinned [`DiskCache.DIRECTORY` and cache paths](https://github.com/SillyTavern/SillyTavern/blob/06bde939fb1e9c4c8d8641d810f0a916b5bce127/src/endpoints/characters.js#L24-L114). Original preflight raises before `save_state(state)`, so the existing owner B1 write authorization has **not been consumed by any observed write**. The original script must never be rerun.
 
-**Fix boundary for subsequent review:** distinguish character PNGs in the verified fixture user directory from cache entries while still rejecting unexpected card files, symlinks, second card owners, wrong canonical target, or changed baseline. Any corrected executable must be independently reviewed/tested and issued as a **new script with a different SHA**, with no automatic retry or relaxation of write limits.
+### C-P3-B1-R1 — corrected executable and independent synthetic tests
+
+Replacement attachment: `chromatichub_h01b3c_b1_stale_editor_r1.py`. SHA-256:
+
+```text
+31b1b39163dff02cd26166567c37a4510d2da10920954d8b076e988e811d3c7c
+```
+
+**Exact code delta:** only `get_cards()` changed. The function now counts files from the fixture's expected `data/default-user/characters/` and skips regular cache files **only** inside the exact `data/_cache/characters/` directory. It still rejects any symlink beneath `data/`, any unexpected `characters` directory (including an empty directory for another user), any extra file in the genuine card directory, an absent/symlinked genuine card directory, and a second real card. Both preflight and all independent PNG/API readback checkpoints call this same corrected inventory.
+
+**Verification performed in ChatGPT's isolated container, not on the owner's actual fixture:**
+
+- Python bytecode compile: PASS.
+- Diff audit: exactly one function edited; no changes to HTTP operations, editor save workflow, one-shot marker, shutdown/cleanup or production code.
+- **11/11** isolated `get_cards()` test scenarios PASS: one card, real card plus cache, multiple cache entries, extra real card, non-PNG file, another user's card directory (including empty), symlinks, absent card directory and symlinked card directory.
+- **3/3** full preflight smoke scenarios PASS with controlled synthetic source/receipt stubs: one real card plus cache, one card without cache, and second real card STOP. These stub portions validate preflight **control flow**, not the real archive or actual server.
+- **Owner native B1-R1 execution: PENDING.** Existing C-P3-A baseline hash and evidence remain unchanged according to owner's read-only report.
+
+**Execution decision:** the original owner authorization for exactly **one** fixture-only merge and **one** manual native editor save remains applicable to R1 after this correction; **no automatic replay or retry is permitted**. R1 requires the owner's deliberate separate command invocation and must not be run if any new fixture state divergence is found. If it reports STOP, preserve all evidence and return for independent review. No B2, concurrent writer, restoration, or production activation is authorized.
 
 ## 7. Review outcome
 
-**B1-D protocol and original executable were reviewed; first owner-native invocation STOPPED in preflight before server/browser startup or card mutation.** The original card-count guard has a synthetically reproduced false-positive defect when disk cache files are present, but the fixture contents have not yet been inspected. **Hold execution pending read-only inventory and a separately reviewed corrected script.** Original B1 write authorization has not been consumed by any observed write; do not treat it as approval to rerun the faulty script. The H01-B3-B adapter remains unconditionally deny-only.
-
-
-**B1-D protocol review: ready for owner approval, not performed.** The above source inspection supports the candidate payload and sequence, but there is **no native browser observation yet** and no assumption that selecting the card/editor is free of automatic saves. The separately designed B1 execution tooling must validate all preconditions and fail closed if the actual UI behavior diverges. The B1 implementation/testing can be ChatGPT-owned as with C-P3-A; no Antigravity coding mission is required.
-
-**Owner decision required before any B1 file creation, server/browser launch or write:** explicitly approve one controlled, fixture-only B1 merge + UI save experiment. The actual script/runbook will be independently checked and presented before execution. Do not treat approval of this protocol as blanket permission to retry or run B2/B3.
+**B1-R1 is ready for owner-native execution, but no B1 editor-save outcome exists yet.** A STOP in the original overbroad guard is **not** evidence that the stale-editor overwrite hypothesis is false. The H01-B3-B editor-safety adapter stays unconditionally deny-only, irrespective of the R1 result.
