@@ -81,7 +81,7 @@ Proposed capabilities (not final routes):
 | **mutate registry** | installedCardId, validated mutation, expected `stateRevision`, expected binding | Server-serialized, atomic state replacement + verified readback; conflicting revision refused |
 | **propose rename** | old/new exact avatars, installedCardId, expected revision, supported evidence | Rebind only if the native transition can be validated under an explicit trust contract; otherwise `UNRESOLVED` |
 | **orphan/reconcile** | explicit user confirmation, binding evidence, expected revision | No silent mapping to another card; records preserved |
-| **export/import bundle** | explicit user action, versioned bounded payload | Sidecar data travels with chosen card via dedicated workflow; import mints a **new installed owner ID** |
+| **export/import bundle — deferred** | explicit user action, future versioned bounded payload | Future portable workflow; no bundled export/import in the first writable V1 milestone |
 
 **Protocol obligations:**
 
@@ -149,7 +149,7 @@ This means the earlier H01-A on-card-only adapter, controller and synthetic test
 2. **G1 design:** freeze state schema/limits/error codes, attach/reconcile model and failure semantics; no invisible fallback.
 3. **G2 synthetic implementation:** pure state machine; path validation; per-owner serialized CAS; replace/failure tests; concurrency and malicious-input tests; no native PNG mutation.
 4. **G3 plugin integration tests:** actual authenticated user-root, CSRF, multi-user isolation, symlink/traversal denial, two-tab conflict, crash/fault scenarios; deny-only legacy route remains untouched.
-5. **G4 owner-native disposable acceptance:** preserve control snapshots; reproduce ordinary native autosave while the sidecar remains unchanged; test restart, rename, duplicate, import replacement, delete/orphan, lost bindings, malformed state and explicit export/re-import.
+5. **G4 owner-native disposable acceptance:** preserve control snapshots; reproduce ordinary native autosave while the sidecar remains unchanged; test restart, rename, duplicate, observed import replacement, delete/orphan, lost bindings, malformed state, and confirm first-release backup/portability warnings. Portable bundle export/re-import receives its own later acceptance gate.
 6. **G5 independent review + release:** separate owner signoff for enabling production persistence and migration; update docs and reconcile older H01-A/ADR-001 wording **after** ratification, not before.
 
 ## 9. Immediate disposition
