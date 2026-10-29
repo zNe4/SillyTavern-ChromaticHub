@@ -1,18 +1,18 @@
 # ADR-002 — External card-scoped persistence
 
-**Status: PROPOSED FOR OWNER REVIEW — NOT YET RATIFIED.**  
-**Prepared:** 2026-10-29 by ChatGPT (architecture/research), for the project owner.  
+**Status: ACCEPTED — V1 ARCHITECTURAL DIRECTION; detailed schema/API and native activation still gated.**  
+**Prepared and accepted:** 2026-10-29. Project owner selected the pragmatic Option A binding policy, accepted the companion server-plugin dependency, and authorized this bounded architectural direction. ChatGPT owns research and documentation.  
 **Implementation:** Antigravity only under later, bounded, reviewed assignments.  
 **Pinned SillyTavern source:** [06bde939fb1e9c4c8d8641d810f0a916b5bce127](https://github.com/SillyTavern/SillyTavern/tree/06bde939fb1e9c4c8d8641d810f0a916b5bce127).  
 **Basis:** [ADR-001](ADR-001-card-scoped-identity.md), [H01-A contract](../design/H01-A-identity-contract-v0.1.md), [B1 acceptance](../acceptance/H01-B3-C-B1-stale-editor-protocol.md), [D1 native lifecycle research](../research/H01-B3-D1-native-lifecycle-binding.md), [external-storage proposal](../design/H01-B3-D-external-registry-persistence-proposal.md).
 
 ## Decision summary
 
-ChromaticHub retains a **card-scoped identity model** but proposes changing its **authoritative installed-card identity registry** from the PNG's `data.extensions.chromaticHub` namespace to a **private per-SillyTavern-user directory**, with one subfolder per **installed card instance**. A small, separately installed and explicitly enabled **SillyTavern server plugin** would own persistence and expose a narrow authenticated API to the browser extension.
+ChromaticHub retains a **card-scoped identity model** and changes its **authoritative installed-card identity registry** from the PNG's `data.extensions.chromaticHub` namespace to a **private per-SillyTavern-user directory**, with one subfolder per **installed card instance**. A small, separately installed and explicitly enabled **SillyTavern server plugin** would own persistence and expose a narrow authenticated API to the browser extension.
 
-**Owner direction already expressed:** per-card folders are preferred, and requiring a companion server plugin is acceptable. This does not yet approve the precise record schema, binding policy, migration/export contract, native plugin activation, or production implementation. Those are this ADR's review gates.
+**Owner-approved V1 policies:** private per-card folders, the companion server plugin, and **Option A** (reuse a unique recorded PNG filename after ordinary restarts, without per-restart identity confirmation). Unobserved same-name replacement is explicitly outside the V1 detection guarantee. To minimize first-release scope, the bundled export/import workflow is **deferred**, with explicit UI warnings that ordinary PNG export excludes Hub data; current H01-A `registry.revision` semantics are retained alongside a separate record-wide CAS generation. The exact JSON schema and endpoints remain **unfrozen implementation-design work**, and native plugin activation or production code is not authorized by this acceptance.
 
-The proposed change **supersedes ADR-001's storage authority and H01-A's embedded-storage adapter assumptions**, but *does not* supersede their card-scoped IDs, validation boundaries, chat-local NPC separation, cross-extension ownership, or ban on identity inference from names. Until ratification, ADR-001 remains historically accepted and this ADR has proposal status; there must be no two concurrent authorities.
+This decision **supersedes ADR-001's storage authority and H01-A's embedded-storage adapter assumptions** for future implementation, but *does not* supersede their card-scoped IDs, validation boundaries, chat-local NPC separation, cross-extension ownership, or ban on identity inference from names. ADR-001 remains a historical decision. No two concurrent authorities may be enabled; the older PNG mutation path remains deny-only.
 
 ## 1. Evidence and problem
 
@@ -66,9 +66,9 @@ The directory is **not** named `Narrator.png`: PNG filenames can change, and dup
 }
 ```
 
-**Two revision domains are intentional:** `stateRevision` is the server's **compare-and-swap generation for the entire binding + registry record** and increments on any accepted record transition; `registry.revision` keeps the H01-A identity-only revision semantics and increments only on registry changes. A read may return a virtual `UNINITIALIZED` registry without writing a file; an explicit attach/first mutation policy must be fixed before implementation. The JSON above depicts a *materialized* registry, not the default after a read.
+**V1 revision policy (accepted; exact mechanics to be frozen in the API spec):** `stateRevision` is the server's **compare-and-swap generation for the entire binding + registry record** and increments on any accepted record transition; `registry.revision` keeps the H01-A identity-only revision semantics and increments only on registry changes. Pure reads never create a sidecar; an explicit user-initiated create/edit may first attach an existing exact card. The attach transaction and initialization details must be fixed before implementation. The JSON above depicts a *materialized* registry, not the default after a read.
 
-## 4. Authenticated plugin API and transaction contract (proposed)
+## 4. Authenticated plugin API and transaction contract (architecture accepted; endpoint names provisional)
 
 The browser extension calls a narrow same-origin API under `/api/plugins/<plugin-id>/...`. Plugin loader middleware in the pinned ST source runs after session/user/CSRF and required-login handling, but every handler must independently enforce user scope, strict JSON shape/size, valid UUID and avatar basenames, and authorized operations.
 
@@ -93,14 +93,14 @@ Proposed capabilities (not final routes):
 6. **Logging/privacy:** do not log raw registry descriptors/aliases or exported sensitive data. No readable files under publicly served static paths; authenticated sessions remain segregated.
 7. **No plugin fallback:** if the plugin is absent, disabled, version-incompatible or unreachable, the UI reports an explicit **UNAVAILABLE / READ_ONLY** posture and refuses authoritative mutations. It must not silently fall back to writing the PNG.
 
-## 5. Installed-card binding state machine (proposed)
+## 5. Installed-card binding state machine (V1 pragmatic policy)
 
 The key limitation is not folder storage but **reliable association with the original installed PNG**. In the pinned ST version, browser events exist for rename, duplicate and delete, but there is no durable cross-tab/server event log; an import may replace the exact same PNG filename. A stable folder UUID, same avatar, image hash, inode, timestamp, card `create_date`, or cloned embedded UUID **alone cannot conclusively prove continuity** across all native/external operations.
 
 | State | Meaning and permitted operations |
 |---|---|
-| `BOUND` | Scoped record is associated with a currently verified exact owner under the supported trust policy; versioned registry reads and mutation can proceed. *Does not claim universal identity proof*. |
-| `UNRESOLVED` | Rename missed, replacement suspected, mismatch or insufficient evidence. Reads may expose recovery diagnostics; **all registry mutation and automatic owner rebind refused**. |
+| `BOUND` | Exactly one state record names an existing exact PNG filename under the authenticated user and no detected conflict is present. Across ordinary restarts, the matching recorded avatar is enough to resume without prompting. Versioned registry reads/mutations can proceed, but this is **not proof against invisible same-name replacement**. |
+| `UNRESOLVED` | Observed conflicting/missed transition, known replacement suspicion, or explicitly inconsistent binding. Reads may expose recovery diagnostics; **registry mutation and automatic owner rebind refused**. Lack of continuous event observation **alone** is not a reason to block an otherwise unique matching avatar after restart. |
 | `ORPHANED` | Original card is absent or explicitly deleted; preserve data for user-driven recovery, not automatic deletion. |
 | `CONFLICT` | Two records claim the same current avatar or an ownership resolution is ambiguous; refuse automatic writes to both. |
 | `CORRUPT` | Invalid/unsupported JSON or filesystem state; **logical read outcome**, do not overwrite as an empty record. |
@@ -108,25 +108,25 @@ The key limitation is not folder storage but **reliable association with the ori
 **Native event policy:**
 
 - **Edit/autosave:** never write Hub authority; remain bound only while supported owner checks succeed.
-- **Rename:** browser `CHARACTER_RENAMED(oldAvatar,newAvatar)` is a *hint*, not durable proof. The plugin validates supported before/after conditions; otherwise mark unresolved. Do not promise seamless rename in other tabs just because one tab saw the event.
+- **Rename:** accept the observed browser `CHARACTER_RENAMED(oldAvatar,newAvatar)` transition as a V1 trusted workflow hint if the existing old binding matches, the old PNG has disappeared, the new exact PNG exists, and no other record claims the destination. Update binding by server-serialized CAS, otherwise mark unresolved. The event is not a durable cross-tab feed; missed offline renames may require user recovery.
 - **Duplicate:** a new PNG is a **new owner instance**; copying its registry is a separate explicitly approved operation, not sharing the source UUID. Cloned PNG metadata is not unique ownership evidence.
 - **Delete:** retain sidecar as `ORPHANED`; never purge on a bare UI event.
-- **Import/replacement:** same-filename replacement can happen without a corresponding trusted client event; do not silently give new card the old sidecar. Reconcile explicitly when detected or suspected.
-- **Restart/offline edits:** reload state; absent/mismatched/ambiguous bindings fail closed. **Unobserved same-filename replacement might be indistinguishable** with present host APIs. This is a declared limitation, not a solved problem.
+- **Import/replacement:** detect and quarantine any **observed** collision/replacement. If an external same-name replacement is wholly unobserved and produces no detectable conflict, V1 may reuse the recorded binding. This is a known, owner-accepted limitation of Option A, not a claim that replacement never happens.
+- **Restart/offline edits:** load all sidecar records, validate exact file existence and unique avatar ownership, and automatically reconnect a unique match. Missing entries become orphaned/unresolved; duplicate claims or malformed records fail closed. **Unobserved same-filename replacement remains indistinguishable** with present host APIs and is within the accepted V1 trust assumption.
 
-### Unresolved choice for owner review: binding guarantee versus usability
+### V1 binding decision — Option A accepted
 
-**Option 1 — conservative external workflow:** Support ordinary operation/restart while relying on the documented *single-instance, no out-of-band card replacement* trust assumption, plus explicit unresolved mode for observed anomalies. This avoids a prompt on every restart but cannot reliably detect an unobserved same-name replacement.
+**Normal behavior:** store the last known `avatar` name in `state.json`; if a later server restart finds exactly one valid state record claiming that filename and the character PNG exists for the same authenticated user, continue in `BOUND` without requesting repeated owner confirmation. This is intentionally simpler than universal file-continuity verification.
 
-**Option 2 — strict proof required:** Refuse `BOUND` whenever continuous installed-card identity cannot be established (possibly after restart) until user reconfirms. This is safer against unknown substitutions but may be disruptive.
+**Stop conditions:** two records claim one avatar; path is invalid; bound PNG is absent; recorded rename conflicts with another binding; detected replacement/corruption; unrecognized storage schema; or failed record CAS. Preserve all data and require explicit owner reconciliation. **Do not** automatically attach a new PNG to an orphan using similar names, same character text, copied UUIDs, or hashes.
 
-**Option 3 — deeper host integration:** Require additional trustworthy server-side lifecycle interception or a separately approved SillyTavern core patch. This improves proof opportunities at extra maintenance cost and is **out of the present implementation scope**.
+**Supported deployment assumptions:** one SillyTavern Node server process owns the writable user-data root; cards are ordinarily edited through SillyTavern; users do not intentionally delete and silently replace a card with a different one under the exact old filename outside ChromaticHub's awareness. If those assumptions are violated without an observable signal, the current API cannot guarantee correct binding, and V1 does not claim to detect it. A later native lifecycle integration may strengthen the guarantee if needed, but is not required for the first release.
 
-**Recommendation for initial release:** option 1 *only if* the owner explicitly accepts its documented trust boundary; otherwise delay automatic binding and implement limited explicit attach/reconcile first. Under no option should identity be silently merged by name/content.
+**Usability priority:** avoid background filesystem watchers, always-on polling, and re-confirmation on routine restarts. Keep explicit recovery for anomalies that are *actually observed*.
 
 ## 6. Export/import and migration
 
-**Native PNG/JSON export will no longer automatically export authoritative Hub data.** A deliberate **Export Card + ChromaticHub Data** bundle (and corresponding import) must be designed. On destination import, create a distinct installedCardId while preserving card-local identity IDs within the imported registry. Do not overwrite an existing owner's sidecar or link independent cards merely because the registries match.
+**Native PNG/JSON export will no longer automatically export authoritative Hub data.** A deliberate **Export Card + ChromaticHub Data** bundle (and corresponding import) is a **later milestone**, not required before the first single-installation writable release. The V1 UI must plainly warn that standard card exports **do not** include Hub identities and provide a documented per-user data backup procedure; do not imply portability or silently embed a second authoritative registry in exported card metadata. A future bundle importer must mint a distinct installedCardId while preserving card-local identity IDs; never overwrite an existing owner's sidecar or link independent cards merely because registries match.
 
 Existing cards with `data.extensions.chromaticHub` may carry legacy metadata. **No automatic migration.** An explicit import/migration path must:
 
@@ -145,7 +145,7 @@ This means the earlier H01-A on-card-only adapter, controller and synthetic test
 
 ## 8. Acceptance gates before any native deployment
 
-1. **G0 architecture review:** owner approves plugin dependency (already indicated), storage authority shift, binding policy option and export contract; ADR becomes accepted only after explicit review.
+1. **G0 architecture review: ACCEPTED.** Owner approved the companion plugin, private per-card authority, pragmatic Option A binding and a simple first-release scope. Export/import bundles are deferred, with mandatory clear portability warning.
 2. **G1 design:** freeze state schema/limits/error codes, attach/reconcile model and failure semantics; no invisible fallback.
 3. **G2 synthetic implementation:** pure state machine; path validation; per-owner serialized CAS; replace/failure tests; concurrency and malicious-input tests; no native PNG mutation.
 4. **G3 plugin integration tests:** actual authenticated user-root, CSRF, multi-user isolation, symlink/traversal denial, two-tab conflict, crash/fault scenarios; deny-only legacy route remains untouched.
@@ -154,6 +154,6 @@ This means the earlier H01-A on-card-only adapter, controller and synthetic test
 
 ## 9. Immediate disposition
 
-**Research proposal only.** Do not install or enable server plugins, create any directories in the owner's SillyTavern installation, modify the B1 disposable card, authorize Antigravity, merge into `main`, or claim that installed-card identity has been solved. Preserve the three B1 PNG snapshots and their SHA-256 receipts.
+**Architectural direction accepted; implementation NOT authorized.** Do not install or enable server plugins, create directories in the owner's SillyTavern installation, modify the B1 disposable card, authorize Antigravity implementation, or merge into `main` on the basis of this ADR alone. Preserve the three B1 PNG snapshots and their SHA-256 receipts.
 
-**Questions to ratify separately:** (a) binding trust option 1/2/3; (b) explicit bundle export/import required for first writable release or a later gated milestone; (c) whether to adopt the two-revision example above or collapse to one authoritative state generation.
+**Next:** ChatGPT freezes the bounded V1 state/API contract, record-generation mechanics, fault and conflict handling, and first-release backup/portability disclosure. Only then prepare a separate Antigravity G0/G1 plan-only mission with a pinned branch and exact scope. Production plugin activation, migration and distribution remain separately gated.
