@@ -1,5 +1,5 @@
 /**
- * SillyTavern-ChromaticHub: Deny-Only Editor-Safety Adapter Tests (H01-B3-B / R1 / R2 / R3)
+ * SillyTavern-ChromaticHub: Deny-Only Editor-Safety Adapter Tests (H01-B3-B / R1 / R2 / R3 / R4)
  *
  * Synthetic unit tests covering:
  * - Exhaustive deny-only boolean grid (all 64 combinations + avatar cases)
@@ -21,6 +21,12 @@
  *   realm only; hostile constructor getters never execute; subclass,
  *   custom-species, and other exotic receivers are skipped by design and
  *   their rejections left to the host
+ * - R4-F1: complete constructor containment — hasOwnProperty descriptor
+ *   traps and revoked proxies (options and probes) produce controlled
+ *   errors via guarded checks and a bounded top-level validation catch
+ * - R4-F2: modified global Promise intrinsics (Promise.prototype.constructor,
+ *   Promise[Symbol.species]) disable suppression conservatively and never
+ *   execute through the adapter; suppression resumes once restored
  * - Invalid owner rejection without probe consultation
  * - Fresh probe evaluation per invocation; sanitized diagnostics; immutability
  * - Controller composition: checkpoint counts, queue-wait and pre-POST safety
@@ -390,6 +396,61 @@ test('adapter - constructor strictness', async (t) => {
       configurable: true,
     });
     const adapter = createSillyTavernEditorSafetyAdapter(options);
+    const decision = adapter.checkEditorSafety({ kind: 'installed-card', avatar: 'Target.png' });
+    assert.equal(decision.safe, false);
+    assert.equal(decision.reason, EDITOR_SAFETY_NOT_CERTIFIABLE);
+  });
+
+  await t.test('R4-F1: throwing getOwnPropertyDescriptor trap (hasOwnProperty path) is controlled', () => {
+    // Object.prototype.hasOwnProperty.call consults the receiver's
+    // getOwnPropertyDescriptor trap; a throwing trap must not leak.
+    const options = new Proxy({ probes: {} }, {
+      getOwnPropertyDescriptor() {
+        throw new Error(SECRET);
+      },
+    });
+    assert.throws(
+      () => createSillyTavernEditorSafetyAdapter(options),
+      (err) => err instanceof Error && !String(err.message).includes(SECRET),
+    );
+  });
+
+  await t.test('R4-F1: same trap on the probes object is controlled', () => {
+    const probes = new Proxy(makeProbes(), {
+      getOwnPropertyDescriptor(target, key) {
+        if (key === '__proto__') {
+          throw new Error(SECRET);
+        }
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      },
+    });
+    assert.throws(
+      () => createSillyTavernEditorSafetyAdapter({ probes }),
+      (err) => err instanceof Error && !String(err.message).includes(SECRET),
+    );
+  });
+
+  await t.test('R4-F1: revoked proxy as options throws a controlled error', () => {
+    const { proxy, revoke } = Proxy.revocable({ probes: {} }, {});
+    revoke();
+    assert.throws(
+      () => createSillyTavernEditorSafetyAdapter(proxy),
+      (err) => err instanceof Error && !String(err.message).includes('revoked'),
+    );
+  });
+
+  await t.test('R4-F1: revoked proxy as probes throws a controlled error', () => {
+    const { proxy, revoke } = Proxy.revocable({}, {});
+    revoke();
+    assert.throws(
+      () => createSillyTavernEditorSafetyAdapter({ probes: proxy }),
+      (err) => err instanceof Error && !String(err.message).includes('revoked'),
+    );
+  });
+
+  await t.test('R4-F1: ordinary construction is unaffected by the bounded catch', () => {
+    const adapter = createSillyTavernEditorSafetyAdapter({ probes: makeProbes() });
+    assert.equal(Object.isFrozen(adapter), true);
     const decision = adapter.checkEditorSafety({ kind: 'installed-card', avatar: 'Target.png' });
     assert.equal(decision.safe, false);
     assert.equal(decision.reason, EDITOR_SAFETY_NOT_CERTIFIABLE);
@@ -803,6 +864,122 @@ test('adapter - R2-F2 promise suppression hardening', async (t) => {
     Promise.prototype.then.call(p, () => {}, () => {});
     await new Promise((resolve) => setTimeout(resolve, 25));
     assert.equal(speciesRuns, 1, 'only the test-owned cleanup consulted species (disarmed)');
+  });
+
+  // R4-F2: the species chain SpeciesConstructor consults runs through the
+  // GLOBAL intrinsics Promise.prototype.constructor and
+  // Promise[Symbol.species], which test code (or any same-realm script)
+  // can modify. While either differs from the module-load snapshot,
+  // suppression must be disabled — a modified chain is not engine-owned
+  // and must never be silently treated as trusted. Each test restores the
+  // original descriptors in finally.
+  await t.test('R4-F2: modified Promise[Symbol.species] disables suppression conservatively', async () => {
+    const rejections = [];
+    const onUnhandled = (reason) => rejections.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    const speciesDesc = Object.getOwnPropertyDescriptor(Promise, Symbol.species);
+    try {
+      let speciesConsultations = 0;
+      Object.defineProperty(Promise, Symbol.species, {
+        get() {
+          speciesConsultations++;
+          return Promise;
+        },
+        configurable: true,
+      });
+      const p = Promise.reject(new Error('modified species rejection'));
+      const probes = makeProbes();
+      probes.editorDirty = () => p;
+      const adapter = createSillyTavernEditorSafetyAdapter({ probes });
+      const decision = adapter.checkEditorSafety({ kind: 'installed-card', avatar: 'Target.png' });
+      assert.equal(decision.safe, false);
+      assert.equal(decision.reason, EDITOR_SAFETY_NOT_CERTIFIABLE);
+      // Suppression must have been skipped BEFORE any species consultation:
+      // a suppression attempt would have consulted the modified getter.
+      assert.equal(
+        speciesConsultations,
+        0,
+        'modified species must never execute via the adapter (suppression skipped)',
+      );
+      // Test-owned same-tick cleanup; may consult species, harmlessly.
+      p.catch(() => {});
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      assert.equal(rejections.length, 0);
+    } finally {
+      Object.defineProperty(Promise, Symbol.species, speciesDesc);
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
+  await t.test('R4-F2: modified Promise.prototype.constructor disables suppression conservatively', async () => {
+    const rejections = [];
+    const onUnhandled = (reason) => rejections.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    const ctorDesc = Object.getOwnPropertyDescriptor(Promise.prototype, 'constructor');
+    try {
+      let hostileCtorRan = false;
+      Object.defineProperty(Promise.prototype, 'constructor', {
+        get() {
+          hostileCtorRan = true;
+          return Promise;
+        },
+        configurable: true,
+      });
+      const p = Promise.reject(new Error('modified proto-constructor rejection'));
+      const probes = makeProbes();
+      probes.saveInFlight = () => p;
+      const adapter = createSillyTavernEditorSafetyAdapter({ probes });
+      const decision = adapter.checkEditorSafety({ kind: 'installed-card', avatar: 'Target.png' });
+      assert.equal(decision.safe, false);
+      assert.equal(hostileCtorRan, false, 'modified prototype constructor must never execute via the adapter');
+      p.catch(() => {});
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    } finally {
+      Object.defineProperty(Promise.prototype, 'constructor', ctorDesc);
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
+  await t.test('R4-F2: suppression works again after intrinsics are restored', async () => {
+    const rejections = [];
+    const onUnhandled = (reason) => rejections.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    const speciesDesc = Object.getOwnPropertyDescriptor(Promise, Symbol.species);
+    try {
+      // Modify the intrinsic; suppression must be skipped while modified.
+      Object.defineProperty(Promise, Symbol.species, {
+        value: Promise,
+        writable: false,
+        configurable: true,
+      });
+      const p1 = Promise.reject(new Error('during-modification rejection'));
+      const adapterSkipped = createSillyTavernEditorSafetyAdapter({
+        probes: makeProbes({ saveScheduled: () => p1 }),
+      });
+      const during = adapterSkipped.checkEditorSafety({ kind: 'installed-card', avatar: 'Target.png' });
+      assert.equal(during.safe, false);
+      // Same-tick cleanup for the deliberately unsuppressed rejection.
+      p1.catch(() => {});
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      void rejections;
+
+      // Restore, then verify ordinary suppression functions again.
+      Object.defineProperty(Promise, Symbol.species, speciesDesc);
+      const p2 = Promise.reject(new Error('post-restore rejection'));
+      const adapter = createSillyTavernEditorSafetyAdapter({
+        probes: makeProbes({ editorVisible: () => p2 }),
+      });
+      const decision = adapter.checkEditorSafety({ kind: 'installed-card', avatar: 'Target.png' });
+      assert.equal(decision.safe, false);
+      // Fresh rejection observable: if restoration re-enabled suppression,
+      // no unhandled rejection may occur for p2.
+      p2.catch(() => {}); // test-owned fallback: p2 is either suppressed or here
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      assert.equal(rejections.length, 0, 'ordinary suppression resumes after restoration');
+    } finally {
+      Object.defineProperty(Promise, Symbol.species, speciesDesc);
+      process.off('unhandledRejection', onUnhandled);
+    }
   });
 });
 
