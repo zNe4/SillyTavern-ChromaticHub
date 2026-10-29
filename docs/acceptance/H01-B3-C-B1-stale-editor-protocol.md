@@ -158,6 +158,35 @@ The owner launched R1 and reported the Firefox window displaying **"Initializing
 
 **Hold:** Do not manually enable content seeding (it also contains default characters and would violate the one-card fixture), copy production settings, edit baseline cards, remove the B1 state marker or repeat B1. Perform read-only settings-file existence, evidence-state, card-hash and shutdown review first. Any planned correction should seed **only** fixture-local default settings from the exact pinned `source/default/content/settings.json` after verifying origin/hash, record the new startup precondition, and issue a separately reviewed one-shot recovery procedure. Existing B1 authorization does not imply permission to rerun a script after its one-shot marker is set.
 
+### B1-R1 native diagnostic — missing fixture settings confirmed (2026-10-29)
+
+The owner inspected the **stopped** R1 fixture after Firefox displayed the settings-initialization error and reported:
+
+```text
+FIXTURE_SETTINGS_EXISTS=False
+DEFAULT_SETTINGS_SOURCE_EXISTS=True
+CARD_ORIGINAL_HASH_MATCH=True
+BASELINE_HASH_MATCH=True
+B1_STATE_EXISTS=True
+STATUS=STOP
+MERGE_ATTEMPTED=False
+MERGE_VERIFIED=False
+MANUAL_EDITOR_SAVE_CLAIMED=False
+PROCESS_STOPPED=True
+BROWSER_STOPPED=True
+PORT_RELEASED=True
+ERROR=KeyboardInterrupt
+B1_SERVER_LOG_EXISTS=True
+```
+
+**Disposition: R1 STOP / no experimental card mutation.** Baseline PNG and card hashes match; the owner exited via `KeyboardInterrupt`; the fixture server and browser stopped and port was released. The **R1 one-shot marker is now spent** and must not be removed, overwritten, or manually reused.
+
+**Confirmed prerequisite gap:** `data/default-user/settings.json` is missing, while the tracked `source/default/content/settings.json` exists. The pinned `public/script.js` emits the exact UI error on failed `POST /api/settings/get`; pinned `src/endpoints/settings.js` returns HTTP 500 when user settings cannot be read. The fixture startup deliberately sets `skipContentCheck: true`, which disables the normal default settings seed. The missing file explains this error path. **No actual per-request HTTP response from the owner was captured**, so avoid asserting a measured 500 or ruling out other bootstrap failures.
+
+**Next step is B1-R2 design, not an immediate retry:** provision **only** fixture-local settings from the pinned committed `source/default/content/settings.json`, validated against the archive. Do not enable general default-content seeding (it could seed a second character), or copy production settings, providers, personal credentials or API keys. The committed settings contain `firstRun: true` and `main_api: koboldhorde`, so for the disposable UI experiment, a reviewed fixture-local derived file should set `firstRun: false` to skip onboarding, and select an inert, no-provider-connection UI route (candidate `main_api: kobold`; source verify before approval). Other fields must remain from committed template; record exact differences and hashes.
+
+**R2 safety requirements:** independent B1-R2 state/config/log/browser-profile namespaces; preserve R1 STOP receipt/config/log and profile; verify original card and baseline hash, single-card inventory, inactive port and `merge_attempted=false`/`manual_editor_save_claimed=false` from R1; seed settings **only if the exact fixture target does not exist**, using exclusive create; verify JSON/HTTP settings bootstrap before opening the browser; one explicit owner-authorized merge and one manual editor Save remain the total B1 mutation budget; no automatic retries, cleanup or restore. Script review and explicit R2 execution approval are separate gates.
+
 ## 7. Review outcome
 
 **B1-R1 is ready for owner-native execution, but no B1 editor-save outcome exists yet.** A STOP in the original overbroad guard is **not** evidence that the stale-editor overwrite hypothesis is false. The H01-B3-B editor-safety adapter stays unconditionally deny-only, irrespective of the R1 result.
