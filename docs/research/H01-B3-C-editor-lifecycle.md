@@ -3,7 +3,23 @@
 **Status:** ChatGPT-owned research draft for independent owner review (2026-10-28). **No implementation or native mutation authorized.**
 
 **Project baseline:** ChromaticHub `efad0836e6562bc4b26f449db9afa4c2fb1ebdc5` on `main` (workflow documentation integrated).  
-**SillyTavern source baseline:** [`06bde939fb1e9c4c8d8641d810f0a916b5bce127`](https://github.com/SillyTavern/SillyTavern/tree/06bde939fb1e9c4c8d8641d810f0a916b5bce127), **not yet proven to match the intended future native executable**. The H00-C native staging checkout was `4ceca42ba2bef15f7c0f9f1040368260c8588b92`. Revalidate source before any native acceptance.
+**SillyTavern source baseline:** [`06bde939fb1e9c4c8d8641d810f0a916b5bce127`](https://github.com/SillyTavern/SillyTavern/tree/06bde939fb1e9c4c8d8641d810f0a916b5bce127). **Owner checkout compared:** `/home/zzzne4/SillyTavern`, branch `m03-d2b1-nanogpt-proxy`, HEAD `4ceca42ba2bef15f7c0f9f1040368260c8588b92`, Node `v24.22.1` (2026-10-28). All six relevant source files are either byte-identical or differ only in a comment; this is source compatibility, **not runtime quiescence certification**. Existing local `package.json` and `package-lock.json` modifications are preserved.
+
+## C-P0 owner source compatibility receipt (2026-10-28)
+
+The owner provided `git ls-tree -r HEAD` file blob hashes for the intended native checkout. Five files match the pinned upstream `06bde93` blobs exactly:
+
+| Source file | Pinned Git blob (matches owner HEAD) |
+| --- | --- |
+| `public/scripts/extensions.js` | `3c1cd876e603a64af9bc74c6e63e93470d46c2a2` |
+| `public/scripts/utils.js` | `6d57bb7b1700c06d160df049dea87dd56cbc9f28` |
+| `src/endpoints/characters.js` | `765160d0a75dff151f1a0b54923596792939dba4` |
+| `src/command-line.js` | `a9ed0bf5adfd13c6ccf1b2368b800433c58b65ab` |
+| `src/users.js` | `3ef054eb725afc3ba1b1ac1952fd9e54d549c073` |
+
+`public/script.js` is `777a2d5983a6283ef9b26726e75192da1e3f3cea` at the pinned source, versus `5a73f7e78d000d404aba02e29c21dd2c18ea7b4b` at the owner HEAD. The owner supplied the complete `git diff --unified=5 <pinned> HEAD -- public/script.js`: the **sole difference** changes “posible” to “possible” in a source comment at approximately line 9775. There is **no executable behavior change** in the inspected diff.
+
+The user-reported working tree is dirty only for `package.json` and `package-lock.json`; both are pre-existing and must remain untouched. **C-P0 source compatibility: PASS.** Remaining C-P0 work is environment/process/port/config/data isolation inventory; neither server launch nor native mutations are authorized.
 
 ## 1. Question and conclusion
 
@@ -53,7 +69,7 @@ Even a successful Hub readback at step 2 cannot exclude step 4 happening later.
 ## 4. Gate design before an Antigravity coding mission
 
 - **C-R — Source research:** complete for the pinned 06bde93 baseline; actual intended executable's HEAD remains **unverified**.
-- **C-P0 — Owner read-only target preflight:** identify Git status, exact source revision, launch/global mode, effective config/data root, enabled extensions, active server ports and browser profiles; do not start a second instance yet.
+- **C-P0 — Owner read-only target preflight:** source revision and tracked relevant files matched as recorded above. Remaining checks: launch/global mode, effective config/data root, enabled extensions, active server ports and browser profiles; do not start a second instance yet.
 - **C-P1 — Isolated setup plan:** fresh disposable source/dependency snapshot and distinct writable config/data directories with symlink and path containment checks; never point at owner production data. Preparation requires separate owner approval.
 - **C-P2 — Read-only instance observation:** separately authorize starting isolated instance and reading its effective paths and a disposable card; no writes or API mutation.
 - **C-P3 — Owner-native race experiments:** **DEFERRED**; requires separate written disposable-card mutation authorization, backup/recovery plan and clear experiment matrix.
@@ -63,7 +79,7 @@ Even a successful Hub readback at step 2 cannot exclude step 4 happening later.
 
 ## 5. Residual questions and acceptance limitations
 
-- What exact SillyTavern commit and launch mode will be the intended native target? H00's earlier staging checkout was not the source-research SHA.
+- The intended native checkout is now pinned at `4ceca42ba2bef15f7c0f9f1040368260c8588b92` and source-compatible at the relevant call sites. Its effective **launch mode/configuration/data root** still need read-only verification.
 - Which startup side effects occur outside data/config roots in the actual target? H00 used an independent archive/dependency snapshot for this reason.
 - Are any other extensions/tabs/writers active in the isolated profile? Must be absent or explicitly listed.
 - Can the editor submit after its UI closes, and under precisely which saved-debounce/switch conditions? Requires isolated owner-native experiments before a positive claim.
