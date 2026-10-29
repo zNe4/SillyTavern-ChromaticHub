@@ -143,6 +143,27 @@ SERVER_LOG=/tmp/ChromaticHub-H01B3C-P1A.mfsvd3mm/logs/c-p2-server.log
 
 **Post-C-P2 status:** server stopped; port released; fixture and `receipts/c-p2-receipt.json`/server log preserved. No test card was created or mutated by the C-P2 verification script. **C-P3-A disposable-card setup and C-P3-B race experiments remain unauthorized.** No production card or ChatGPT-owned Hub source should be touched.
 
+### C-P3-0 — owner-native read-only post-startup evidence receipt (2026-10-28)
+
+The owner evaluated the preserved `receipts/c-p2-receipt.json` and `logs/c-p2-server.log` and counted existing card PNGs without restarting SillyTavern or modifying fixture state. Their reported output:
+
+```text
+RECEIPT_PASS=PASS
+SERVER_STOPPED=PASS
+PORT_RELEASED=PASS
+READ_ONLY_HTTP=PASS
+HTTP_200=PASS
+CARD_MUTATIONS_NONE=PASS
+EXISTING_CARD_PNGS=0
+LOG_ALERT_LINES=0
+LOG_TOTAL_LINES=120
+C_P3_0=RECEIPTS_PASS
+```
+
+**Decision: C-P3-0 PASS, based on owner's local report.** The preserved C-P2 receipt shows status/safety fields in expected states; zero character PNG files were detected under fixture `data/**/characters/*.png`; the keyword search found no `error|warning|fatal|exception|failed` lines in the 120-line server log. This is **not a comprehensive security or file-integrity audit** and does not prove the absence of all unlogged startup side effects, non-PNG card formats, or future concurrent writers. Treat it as sufficient evidence to **propose** C-P3-A, not as authority to perform any mutation.
+
+**C-P3-A proposed narrow scope (not yet authorized):** owner-run fixture-only restart with exact process identity and path/port containment; one synthetically named, credential-free character created under fixture data root; record card/avatar locator and full PNG hash, re-read via SillyTavern API, parse offline PNG text metadata and retain an immutable baseline in fixture receipts; stop the isolated server and verify port release. Do not copy user cards, install providers, enable ChromaticHub runtime writes, edit other cards, retry ambiguous POSTs, or run any editor-race experiment. Require explicit separate owner approval before generating an executable mutation procedure.
+
 ### C-P3 stage separation (planned; not authorization)
 
 | Gate | Proposed scope | Write permissions | Acceptance |
@@ -181,4 +202,4 @@ The experiment harness must not monkey-patch live SillyTavern or send mutation r
 
 ## Next decision after C-P2
 
-**C-P1-A and C-P2 are accepted based on the owner's execution receipts.** Research and isolation design remain documentation-only. Next is **C-P3-0 receipt/log review**, strictly read-only, followed by a separately authorized **C-P3-A disposable-card baseline** if no unexpected startup side effects are found. Preserve the existing fixture and evidence. No Antigravity coding task, production adapter activation, real-card write or race experiment is authorized.
+**C-P1-A, C-P2 and C-P3-0 are accepted on owner-reported native evidence.** The next gate is **C-P3-A**, a separately authorized one-card synthetic fixture baseline with full API/offline persistence verification, fixture-only backup and targeted shutdown. No Antigravity coding task, production adapter activation, real-card write or editor-race experiment is authorized.
